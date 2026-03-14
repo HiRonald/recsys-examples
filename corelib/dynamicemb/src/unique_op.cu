@@ -63,14 +63,14 @@ void bind_unique_op(py::module &m) {
           [](dyn_emb::UniqueOpBase &self, const at::Tensor &d_key, uint64_t len,
              const at::Tensor &d_output_index, const at::Tensor &d_unique_key,
              const at::Tensor &d_output_counter, uint64_t stream = 0,
-             const c10::optional<at::Tensor> &offset = c10::nullopt) {
+             const c10::optional<at::Tensor> &offset = c10::nullopt) -> long long {
             cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
 
             if (offset.has_value()) {
-              self.unique(d_key, len, d_output_index, d_unique_key,
+              return self.unique(d_key, len, d_output_index, d_unique_key,
                           d_output_counter, cuda_stream, offset.value());
             } else {
-              self.unique(d_key, len, d_output_index, d_unique_key,
+              return self.unique(d_key, len, d_output_index, d_unique_key,
                           d_output_counter, cuda_stream);
             }
           },
@@ -78,7 +78,6 @@ void bind_unique_op(py::module &m) {
           py::arg("d_output_index"), py::arg("d_unique_key"),
           py::arg("d_output_counter"), py::arg("stream") = 0,
           py::arg("offset") = c10::nullopt)
-
       .def(
           "reset_capacity",
           [](dyn_emb::UniqueOpBase &self, const at::Tensor &keys,

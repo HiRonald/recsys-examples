@@ -32,12 +32,14 @@
 #include <torch/extension.h>
 #include <torch/torch.h>
 
+#include <chrono>
+
 namespace dyn_emb {
 
 class UniqueOpBase {
 public:
   // virtual ~UniqueOpBase() = default;
-  virtual void unique(const at::Tensor d_key, const uint64_t len,
+  virtual long long unique(const at::Tensor d_key, const uint64_t len,
                       at::Tensor d_output_index, at::Tensor d_unique_key,
                       at::Tensor d_output_counter, cudaStream_t stream = 0,
                       at::Tensor offset = at::Tensor()) = 0;
@@ -63,7 +65,7 @@ public:
         reinterpret_cast<CounterType *>(vals.data_ptr()),
         reinterpret_cast<CounterType *>(counter.data_ptr()), capacity);
   }
-  void unique(const at::Tensor d_key, const uint64_t len,
+  long long unique(const at::Tensor d_key, const uint64_t len,
               at::Tensor d_output_index, at::Tensor d_unique_key,
               at::Tensor d_output_counter, cudaStream_t stream = 0,
               at::Tensor offset =
@@ -82,13 +84,23 @@ public:
       offset_ptr = offset.data_ptr<CounterType>();
     }
 
+    auto start_time = std::chrono::steady_clock::now();
     this->unique_op_->unique(
         reinterpret_cast<KeyType *>(d_key.data_ptr()), len,
         reinterpret_cast<CounterType *>(d_output_index.data_ptr()),
         reinterpret_cast<KeyType *>(d_unique_key.data_ptr()),
         reinterpret_cast<CounterType *>(d_output_counter.data_ptr()), stream,
         offset_ptr);
+
+    // Synchronize the stream to ensure all operations are completed
+    DEMB_CUDA_CHECK(cudaStreamSynchronize(stream));
+    
+    auto end_time = std::chrono::steady_clock::now();
+    long long duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+
     this->unique_op_->clear(stream);
+
+    return duration;
   }
 
   void reset_capacity(at::Tensor keys, at::Tensor vals, const size_t capacity,

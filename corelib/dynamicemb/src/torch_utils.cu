@@ -21,15 +21,28 @@ namespace {
 
 template <class S>
 __global__ void device_nano_kernel(S* d_clk) {
+  S start_time, end_time;
+
+  // 获取起始纳秒时间戳
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start_time));
+
   S mclk;
   asm volatile("mov.u64 %0,%%globaltimer;" : "=l"(mclk));
-  *d_clk = mclk;
+  d_clk[0] = mclk;
+
+  // 获取结束纳秒时间戳
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(end_time));
+
+  // 只让一个线程记录差值（注意：不同线程执行时间可能不同）
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+      d_clk[1] = end_time - start_time;
+  }
 }
 
 class DeviceTimestamp {
 public:
   DeviceTimestamp() {
-    CUDACHECK(cudaMalloc((void**)&d_timestamp, sizeof(uint64_t)));
+    CUDACHECK(cudaMalloc((void**)&d_timestamp, 2 * sizeof(uint64_t)));
   }
 
   ~DeviceTimestamp() {
@@ -39,15 +52,15 @@ public:
   uint64_t get(const cudaStream_t& stream) {
     device_nano_kernel<uint64_t><<<1, 1, 0, stream>>>(d_timestamp);
     DEMB_CUDA_KERNEL_LAUNCH_CHECK();
-    CUDACHECK(cudaMemcpyAsync(&h_timestamp, d_timestamp, sizeof(uint64_t), 
+    CUDACHECK(cudaMemcpyAsync(&h_timestamp, d_timestamp, 2 * sizeof(uint64_t), 
       cudaMemcpyDeviceToHost, stream));
     CUDACHECK(cudaStreamSynchronize(stream));
-    return h_timestamp;
+    return h_timestamp[1];
   }
 
 private:
   uint64_t* d_timestamp {nullptr};
-  uint64_t h_timestamp {0};
+  uint64_t h_timestamp[2] {0};
 };
 
 }

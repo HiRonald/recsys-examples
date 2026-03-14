@@ -307,8 +307,15 @@ __global__ void get_table_range_kernel(
   int64_t feature_x_batch,
   T const * __restrict__ offsets,
   T const * __restrict__ feature_offsets,
-  T * __restrict__ table_range
+  T * __restrict__ table_range,
+  uint64_t* d_duration // 新增：用于返回耗时（纳秒）
 ) {
+  uint64_t start_time;
+  // 只在第一个线程记录起始时间
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start_time));
+  }
+
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid < num_table + 1) {
     T num_feature = feature_offsets[num_table];
@@ -317,9 +324,16 @@ __global__ void get_table_range_kernel(
     T feature_x_batch_offset = feature_offset * batch;
     table_range[tid] = offsets[feature_x_batch_offset];
   }
+  
+  // 只在第一个线程记录结束时间并计算耗时
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    uint64_t end_time;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(end_time));
+    d_duration[0] = end_time - start_time;
+  }
 }
 
-at::Tensor get_table_range(at::Tensor offsets, at::Tensor feature_offsets) {
+uint64_t get_table_range(at::Tensor offsets, at::Tensor feature_offsets) {
   if (!offsets.is_cuda()) {
     throw std::runtime_error("Tensor <offsets> must be on CUDA device.");
   }
@@ -332,6 +346,11 @@ at::Tensor get_table_range(at::Tensor offsets, at::Tensor feature_offsets) {
   auto stream = at::cuda::getCurrentCUDAStream().stream();
   at::Tensor table_range = at::empty_like(feature_offsets);
 
+  // 1. 分配用于存储时间戳的临时显存
+  uint64_t *d_duration;
+  uint64_t h_duration = 0;
+  cudaMalloc((void**)&d_duration, sizeof(uint64_t));
+
   int block_size = 128;
   if (num_table + 1 < block_size) {
     block_size = num_table + 1;
@@ -342,11 +361,21 @@ at::Tensor get_table_range(at::Tensor offsets, at::Tensor feature_offsets) {
     get_table_range_kernel<offset_t><<<grid_size, block_size, 0, stream>>>(
       num_table, feature_x_batch, reinterpret_cast<offset_t*>(offsets.data_ptr()),
       reinterpret_cast<offset_t*>(feature_offsets.data_ptr()),
-      reinterpret_cast<offset_t*>(table_range.data_ptr())
+      reinterpret_cast<offset_t*>(table_range.data_ptr()),
+      d_duration // 新增：传递耗时显存指针
     );
   });
+
+  // 2. 异步拷贝回 Host 并同步流
+  cudaMemcpyAsync(&h_duration, d_duration, sizeof(uint64_t), cudaMemcpyDeviceToHost, stream);
+  cudaStreamSynchronize(stream);
+  
+  // 3. 释放临时空间
+  cudaFree(d_duration);
+
   DEMB_CUDA_KERNEL_LAUNCH_CHECK();
-  return table_range;
+
+  return h_duration; // 返回耗时（纳秒）
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>

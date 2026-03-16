@@ -313,7 +313,7 @@ __global__ void get_table_range_kernel(
   uint64_t start_time;
   // 只在第一个线程记录起始时间
   if (blockIdx.x == 0 && threadIdx.x == 0) {
-    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start_time));
+    asm volatile("mov.u64 %0, %%clock64;" : "=l"(start_time));
   }
 
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -328,7 +328,7 @@ __global__ void get_table_range_kernel(
   // 只在第一个线程记录结束时间并计算耗时
   if (blockIdx.x == 0 && threadIdx.x == 0) {
     uint64_t end_time;
-    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(end_time));
+    asm volatile("mov.u64 %0, %%clock64;" : "=l"(end_time));
     d_duration[0] = end_time - start_time;
   }
 }

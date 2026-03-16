@@ -24,14 +24,14 @@ __global__ void device_nano_kernel(S* d_clk) {
   S start_time, end_time;
 
   // 获取起始纳秒时间戳
-  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start_time));
+  asm volatile("mov.u64 %0, %%clock64;" : "=l"(start_time));
 
   S mclk;
   asm volatile("mov.u64 %0,%%globaltimer;" : "=l"(mclk));
   d_clk[0] = mclk;
 
   // 获取结束纳秒时间戳
-  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(end_time));
+  asm volatile("mov.u64 %0, %%clock64;" : "=l"(end_time));
 
   // 只让一个线程记录差值（注意：不同线程执行时间可能不同）
   if (threadIdx.x == 0 && blockIdx.x == 0) {

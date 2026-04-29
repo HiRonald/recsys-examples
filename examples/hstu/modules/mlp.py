@@ -92,7 +92,7 @@ class MLP(BaseModule):  # type: ignore
         self._mlp = torch.nn.Sequential(*layers)
         self._mlp.apply(init_mlp_weights_optional_bias)
 
-    @output_nvtx_hook(nvtx_tag="mlp")
+    # @output_nvtx_hook(nvtx_tag="mlp")
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the MLP module.

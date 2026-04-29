@@ -76,6 +76,8 @@ class TrainerArgs:
     # - True -> use balanced batch shuffler (e.g., HASTUBalancedBatchShuffler)
     # - False -> use IdentityBalancedBatchShuffler (no load balancing)
     enable_balanced_shuffler: bool = False
+    enable_disterminism: bool = False
+    model_name: Optional[str] = None
 
     def __post_init__(self):
         if isinstance(self.max_train_iters, str):
@@ -298,10 +300,12 @@ class NetworkArgs:
 
     dtype_str: str = "bfloat16"
 
+    layer_type: str = "fused"
     kernel_backend: str = "cutlass"
     target_group_size: int = 1
 
     num_position_buckets: int = 8192
+    hash_size: int = 10_000_000
 
     recompute_input_layernorm: bool = False
     recompute_input_silu: bool = False
@@ -318,7 +322,8 @@ class NetworkArgs:
             "float16",
         ], "Only support bfloat16 and float16 precision for Network."
 
-        assert self.kernel_backend.lower() in ["cutlass", "triton", "pytorch"]
+        assert self.kernel_backend.lower() in ["cutlass", "triton", "pytorch", "npu_fused"]
+        assert self.layer_type.lower() in ["native", "fused"]
 
 
 @gin.configurable

@@ -18,6 +18,7 @@ from typing import Iterator, Optional, Union
 
 import commons.checkpoint as checkpoint
 import torch  # pylint: disable-unused-import
+import torch_npu
 import torch.distributed as dist
 from commons.checkpoint import get_unwrapped_module
 from commons.pipeline.train_pipeline import (
@@ -34,6 +35,37 @@ from modules.metrics import RetrievalTaskMetricWithSampling
 from trainer.utils import cal_flops
 from utils import TrainerArgs
 
+import time
+import numpy as np
+
+def latency_summary_rank0(latency_list, batch_size, model_name, device_name, inductor_flag):
+    ave_step = np.array(latency_list)
+    avg_time = sum(ave_step) / len(ave_step)
+    ave_step.sort()
+
+    if len(ave_step) > 0:
+        p90 = np.percentile(ave_step, 90, method="lower")
+        p95 = np.percentile(ave_step, 95, method="lower")
+        p99 = np.percentile(ave_step, 99, method="lower")
+        p999 = np.percentile(ave_step, 99.9, method="lower")
+
+    e2e_result = {
+        "Batch_size": batch_size,
+        "model_name": model_name,
+        "AVG Latency": avg_time,
+        "P999 Latency": p999,
+        "P99 Latency": p99,
+        "P95 Latency": p95,
+        "P90 Latency": p90,
+    }
+
+    model_detail_info = device_name + "_" + model_name + "_" + inductor_flag
+    output_str = "performance: " + model_detail_info + "_" + str(e2e_result)
+
+    os.makedirs(f"../save_results_{device_name}/", exist_ok=True)
+    with open(f"../save_results_{device_name}/performance_result.txt", "a", encoding="utf-8") as f:
+        f.write(output_str + "\n")
+    return avg_time
 
 def evaluate(
     pipeline: Union[
@@ -46,7 +78,6 @@ def evaluate(
     eval_loader: torch.utils.data.DataLoader,
 ):
     eval_iter = 0
-    torch.cuda.nvtx.range_push(f"#evaluate")
     max_eval_iters = trainer_args.max_eval_iters or len(eval_loader)
     max_eval_iters = min(max_eval_iters, len(eval_loader))
     # make a copy of eval_loader to avoid modifying the original loader
@@ -75,7 +106,7 @@ def evaluate(
         f"[eval] [eval {eval_iter * dp_size * trainer_args.eval_batch_size} users]:\n    "
         + stringify_dict(eval_metric_dict, prefix="Metrics", sep="\n    ")
     )
-    torch.cuda.nvtx.range_pop()
+    return eval_metric_dict
 
 
 def maybe_load_ckpts(
@@ -110,7 +141,7 @@ def save_ckpts(
             os.makedirs(ckpt_save_dir, exist_ok=True)
         except Exception as e:
             raise Exception("can't build path:", ckpt_save_dir) from e
-    dist.barrier(device_ids=[torch.cuda.current_device()])
+    dist.barrier(device_ids=[torch_npu.npu.current_device()])
     checkpoint.save(ckpt_save_dir, model, dense_optimizer=dense_optimizer)
     print_rank_0(f"Checkpoints saved!!")
 
@@ -154,15 +185,48 @@ def train_with_pipeline(
     iter_slices = batched(train_loader_iter, n)
     start_iter = 0
     pipeline._model.train()
+
+    PROFILE_ENABLE = os.environ.get("NPU_PROFILE", "0").lower() in ("1", "true")
+    if PROFILE_ENABLE:
+        experimental_config = torch_npu.profiler._ExperimentalConfig(
+            export_type=torch_npu.profiler.ExportType.Text,
+            profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+            msprof_tx=False,
+            aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+            l2_cache=False,
+            op_attr=False,
+            data_simplification=False,
+            record_op_args=False,
+            gc_detect_threshold=None,
+        )
+
+        prof = torch_npu.profiler.profile(
+        activities=[
+            torch_npu.profiler.ProfilerActivity.CPU,
+            torch_npu.profiler.ProfilerActivity.NPU
+            ],
+        schedule=torch_npu.profiler.schedule(wait=50, warmup=0, active=10, repeat=1, skip_first=1),
+        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./result"),
+        record_shapes=True,
+        profile_memory=False,
+        with_stack=False,
+        with_modules=False,
+        with_flops=False,
+        experimental_config=experimental_config)
+
+        prof.start()
+
+    epoch = 0
+    train_times = []
+
     for batched_iterator in iter_slices:
         # for one slice(every eval interval)
         for train_iter in count(start_iter):
+            start_time = time.time()
             if trainer_args.profile and train_iter == trainer_args.profile_step_start:
-                dist.barrier(device_ids=[torch.cuda.current_device()])
-                torch.cuda.profiler.start()
+                dist.barrier(device_ids=[torch_npu.npu.current_device()])
             if trainer_args.profile and train_iter == trainer_args.profile_step_end:
-                torch.cuda.profiler.stop()
-                dist.barrier(device_ids=[torch.cuda.current_device()])
+                dist.barrier(device_ids=[torch_npu.npu.current_device()])
             if (
                 train_iter * trainer_args.ckpt_save_interval > 0
                 and train_iter % trainer_args.ckpt_save_interval == 0
@@ -172,7 +236,6 @@ def train_with_pipeline(
                 )
                 save_ckpts(save_path, pipeline._model, dense_optimizer)
             try:
-                torch.cuda.nvtx.range_push(f"step {train_iter}")
                 reporting_loss, (
                     local_loss,
                     logits,
@@ -183,12 +246,21 @@ def train_with_pipeline(
                 ddp_num_contextuals.append(ddp_num_contextual.view(-1))
                 ddp_num_candidates.append(ddp_num_candidate.view(-1))
                 tokens_logged += reporting_loss[1]
-                torch.cuda.nvtx.range_pop()
+                if PROFILE_ENABLE:
+                    prof.step()
             except StopIteration:
                 start_iter = train_iter
-                torch.cuda.nvtx.range_pop()
                 break
             # log
+
+            if train_iter > 100 and train_iter % trainer_args.eval_interval > 10:
+                train_times.append(train_time)
+
+            final_loss_value = reporting_loss[0] / reporting_loss[1]
+            if train_iter % 10 == 0:
+                train_time = time.time() - start_time
+                print_rank_0(f"epoch: {epoch}, step: [{train_iter} / {trainer_args.max_train_iters}], loss = {reporting_loss[0] / reporting_loss[1]:.6f}, time = {train_time}")
+
             if train_iter > 0 and (train_iter + 1) % trainer_args.log_interval == 0:
                 gpu_timer.stop()
                 cur_td = gpu_timer.elapsed_time() - last_td
@@ -209,10 +281,49 @@ def train_with_pipeline(
         # TODO CHECK if train pipeline is flushed
         if train_iter > 0 and train_iter % trainer_args.eval_interval == 0:
             pipeline._model.eval()
-            evaluate(
+            metrics_dict = evaluate(
                 pipeline,
                 stateful_metric_module,
                 trainer_args=trainer_args,
                 eval_loader=eval_loader,
             )
+            last_metrics = metrics_dict
             pipeline._model.train()
+        epoch += 1
+    if PROFILE_ENABLE:
+        prof.stop()
+
+    avg_time = latency_summary_rank0(train_times, trainer_args.train_batch_size, trainer_args.model_name, "NPU", "eager")
+
+    NDCG_10 = last_metrics.get('NDCG@10', 0.0)
+    NDCG_20 = last_metrics.get('NDCG@20', 0.0)
+    HR = last_metrics.get('HR@10', 0.0)
+    if hasattr(NDCG_10, 'item'):
+        NDCG_10 = NDCG_10.item()
+    if hasattr(NDCG_20, 'item'):
+        NDCG_20 = NDCG_20.item()
+    if hasattr(HR, 'item'):
+        HR = HR.item()
+    final_results = {
+        'dataset_name': "ml-20m",
+        'batch_size': trainer_args.train_batch_size,
+        'epoch': epoch,
+        'step': train_iter,
+        'final_loss': final_loss_value.cpu().item(),
+        "ms/step": float(avg_time) * 1000,
+        'metrics': {
+            'NDCG_10': float(NDCG_10),
+            'NDCG_20': float(NDCG_20),
+            'HR': float(HR)
+        }
+    }
+
+    model_detail_info = "NPU" + "_" + "retrieval" + "_" + "eager"
+    output_str = model_detail_info + "_" + str(final_results)
+    print_rank_0(f"The Final Result: {output_str}")
+    with open(f"../save_results_NPU/precision_result.txt", "a", encoding="utf-8") as f:
+        f.write(output_str + "\n")
+
+    del final_results["ms/step"]
+    os.makedirs(f"../save_results_NPU/retrieval", exist_ok=True)
+    torch.save(final_results, f"../save_results_NPU/retrieval/predictions_retrieval_eager_{train_iter}.pt")

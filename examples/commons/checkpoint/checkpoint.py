@@ -19,8 +19,8 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from commons.utils.logger import print_rank_0
-from dynamicemb.dump_load import DynamicEmbDump as dynamic_emb_save
-from dynamicemb.dump_load import DynamicEmbLoad as dynamic_emb_load
+from dynamic_emb.distributed.dump_load import DynamicEmbDump as dynamic_emb_save
+from dynamic_emb.distributed.dump_load import DynamicEmbLoad as dynamic_emb_load
 from megatron.core.distributed import DistributedDataParallel
 from megatron.core.optimizer import MegatronOptimizer
 from megatron.core.transformer.module import Float16Module
@@ -41,6 +41,10 @@ def get_unwrapped_module(module: nn.Module) -> nn.Module:
             module = module._dmp_wrapped_module
         else:
             module = module.module
+    if hasattr(module, '_module'):
+        module = module._module
+    while hasattr(module, 'module'):
+        module = module.module
     return module
 
 

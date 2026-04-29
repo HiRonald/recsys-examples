@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 import warnings
 
 # Ignore all FutureWarnings
@@ -23,6 +24,9 @@ from typing import List, Union
 import commons.utils.initialize as init
 import gin
 import torch  # pylint: disable-unused-import
+import torch_npu
+torch.ops.load_library(f"/usr/local/python3.11.0/lib/python3.11/site-packages/libfbgemm_npu_api.so")
+import mindspeed.megatron_adaptor
 from commons.distributed.batch_shuffler_factory import BatchShufflerFactory
 from commons.distributed.sharding import make_optimizer_and_shard
 from commons.pipeline import TrainPipelineFactory
@@ -49,6 +53,12 @@ from utils import (  # from hstu.utils
     TensorModelParallelArgs,
     TrainerArgs,
 )
+from megatron.training.arguments import parse_args, validate_args
+from megatron.training.yaml_arguments import validate_yaml
+from megatron.training.global_vars import set_global_variables
+from ops.pt_ops.pt_jagged_dense_convert import jagged_to_padded_dense_wrapper, dense_to_jagged_wrapper
+torch.ops.fbgemm.jagged_to_padded_dense = jagged_to_padded_dense_wrapper
+torch.ops.fbgemm.dense_to_jagged = dense_to_jagged_wrapper
 
 
 def create_retrieval_config(
@@ -74,13 +84,30 @@ def main():
         description="Distributed GR Arguments", allow_abbrev=False
     )
     parser.add_argument("--gin-config-file", type=str)
+    parser.add_argument("--train-batch-size", type=int, default=None)
+    parser.add_argument("--epochs", type=int, default=None)
+
     args = parser.parse_args()
     gin.parse_config_file(args.gin_config_file)
     trainer_args = TrainerArgs()
-    dataset_args, embedding_args = get_dataset_and_embedding_args(
-        caching=trainer_args.pipeline_type == "prefetch"
-    )
+    trainer_args.model_name = "retrieval"
+    trainer_args.train_batch_size = args.train_batch_size or trainer_args.train_batch_size
+    final_epochs = args.epochs
+    env_epoch_str = os.environ.get("MODEL_EPOCH")
+    if env_epoch_str is not None:
+        try:
+            final_epochs = int(env_epoch_str)
+        except ValueError:
+            print_rank_0(
+                f"Warning: Invalid value for MODEL_EPOCH environment variable: {env_epoch_str}"
+            )
+    trainer_args.max_train_iters = final_epochs * trainer_args.eval_interval if final_epochs is not None else trainer_args.max_train_iters
+
     network_args = NetworkArgs()
+    dataset_args, embedding_args = get_dataset_and_embedding_args(
+        caching=trainer_args.pipeline_type == "prefetch",
+        network_args=network_args,
+    )
     optimizer_args = OptimizerArgs()
     tp_args = TensorModelParallelArgs()
 
@@ -89,7 +116,9 @@ def main():
         tensor_model_parallel_size=tp_args.tensor_model_parallel_size
     )
     init.set_random_seed(trainer_args.seed)
-
+    if trainer_args.enable_disterminism:
+        from msprobe.pytorch import seed_all
+        seed_all(seed = trainer_args.seed, mode = True, rm_dropout = False)
     hstu_config = create_hstu_config(network_args, tp_args)
     task_config = create_retrieval_config(dataset_args, network_args, embedding_args)
     model = get_retrieval_model(hstu_config=hstu_config, task_config=task_config)
@@ -143,7 +172,7 @@ def main():
         pipeline_name,
         model=model_train,
         optimizer=dense_optimizer,
-        device=torch.device("cuda", torch.cuda.current_device()),
+        device=torch.device("npu", torch_npu.npu.current_device()),
         batch_shuffler=batch_shuffler,
     )
 

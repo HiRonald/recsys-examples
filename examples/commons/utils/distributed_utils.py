@@ -15,15 +15,18 @@
 from typing import Optional
 
 import torch
+import torch_npu
 
 
 def collective_assert(
     flag: bool, err_msg: str = "", group: torch.distributed.ProcessGroup = None
 ):
-    """
-    Assert that all ranks have the same flag.
-    """
-    flag_tensor = torch.tensor(flag, dtype=torch.bool).cuda()
+    if torch.cuda.is_available():
+        flag_tensor = torch.tensor(flag, dtype=torch.bool).cuda()
+    elif torch_npu.npu.is_available():
+        flag_tensor = torch.tensor(flag, dtype=torch.bool).npu()
+    else:
+        raise ValueError("No GPU or NPU available")
     torch.distributed.all_reduce(
         flag_tensor, op=torch.distributed.ReduceOp.MIN, group=group
     )

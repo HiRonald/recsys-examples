@@ -112,12 +112,10 @@ class _NvtxRangePush(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, msg="None"):
         ctx.msg = msg
-        torch.cuda.nvtx.range_push(msg)
         return input
 
     @staticmethod
     def backward(ctx, grad_in):
-        torch.cuda.nvtx.range_pop()
         return grad_in, None
 
 
@@ -125,13 +123,11 @@ class _NvtxRangePop(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, msg="None"):
         ctx.msg = msg
-        torch.cuda.nvtx.range_pop()
         return input
 
     @staticmethod
     def backward(ctx, grad_in):
         msg = ctx.msg
-        torch.cuda.nvtx.range_push(msg)
         return grad_in, None
 
 

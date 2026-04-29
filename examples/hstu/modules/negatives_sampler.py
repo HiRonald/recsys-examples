@@ -127,7 +127,12 @@ class InBatchNegativesSampler(NegativesSampler):
             device=positive_ids.device,
         )
 
+        flat_idx = sampled_indices.reshape(-1)                       # (N,)
+        flat_emb = torch.index_select(sampled_candidate_embeddings, 0, flat_idx)  # (N, D)
+        sampled_emb = flat_emb.reshape(*sampled_indices.shape, sampled_candidate_embeddings.size(1))  # (*batch_shape, K, D)
+
         return (
             sampled_candidate_ids[sampled_indices],
-            sampled_candidate_embeddings[sampled_indices],
+            # sampled_candidate_embeddings[sampled_indices],
+            sampled_emb
         )

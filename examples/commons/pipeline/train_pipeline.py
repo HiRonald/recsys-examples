@@ -908,9 +908,8 @@ class JaggedMegatronTrainNonePipeline:
             if hasattr(self._model.module, "zero_grad_buffer"):
                 self._model.module.zero_grad_buffer()
             self._optimizer.zero_grad()
-
-        # H2D and shuffle
-        batch = self._copy_batch_to_gpu_and_shuffle(dataloader_iter)
+        with nvtx.annotate("## H2D ##"):
+            batch = next(dataloader_iter).to(self._device)
         with nvtx.annotate("## forward ##"):
             losses, output = self._model(batch)
 

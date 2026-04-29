@@ -4,10 +4,11 @@ TrainerArgs.eval_batch_size = 128
 TrainerArgs.eval_interval = 100
 TrainerArgs.log_interval = 100
 TrainerArgs.seed = 1234
-TrainerArgs.max_train_iters = 1000
-TrainerArgs.profile = True
-TrainerArgs.pipeline_type = "prefetch"
-TrainerArgs.enable_balanced_shuffler = True  # Set to True to enable balanced batch shuffling
+TrainerArgs.max_train_iters = 5000
+TrainerArgs.profile = False
+TrainerArgs.pipeline_type = "none"
+TrainerArgs.enable_balanced_shuffler = False  # Set to True to enable balanced batch shuffling
+TrainerArgs.enable_disterminism = False
 
 # ml-1m : 5 contextual features, 
 # ml-20m : 1 contextual feature
@@ -24,6 +25,9 @@ NetworkArgs.num_attention_heads = 4
 NetworkArgs.hidden_size = 128
 NetworkArgs.kv_channels = 128
 NetworkArgs.target_group_size = 1
+NetworkArgs.kernel_backend = 'npu_fused'
+NetworkArgs.layer_type = 'native'
+NetworkArgs.hash_size = 10000000
 
 # ml-20m ratings 1:0.5:5
 # ml-1m ratings 1:1:5

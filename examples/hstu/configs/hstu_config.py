@@ -53,11 +53,13 @@ class KernelBackend(Enum):
       TRITON: Represents the TRITON backend.
       PYTORCH: Represents the PYTORCH backend.
       CUTLASS: Represents the CUTLASS backend.
+      NPU_FUSED: Represents the NPU_FUSED backend.
     """
 
     TRITON = "TRITON"
     PYTORCH = "PYTORCH"
     CUTLASS = "CUTLASS"
+    NPU_FUSED = "NPU_FUSED"
 
 
 @dataclass
@@ -129,6 +131,48 @@ class HSTUConfig(TransformerConfig):
     is_inference: bool = False
     add_uvqk_bias: bool = True
     fuse_norm_mul_dropout: bool = True
+    # 新增 MindSpeed 训练配置参数
+    moe_zero_memory_num_layers = None
+    moe_zero_memory = "disable"
+    optimizer_selection = None    
+    ema_decay = 0
+    noop_layers = None
+    use_ascend_coc = False
+    transformer_impl = None
+    use_gmm_fp8 = False
+    context_parallel_cache_interval = 0
+    use_ulysses_allgather_kv = False
+    use_fused_rotary_pos_emb = False
+    context_parallel_kv_cache_policy = False
+    use_fused_moe_token_permute_and_unpermute=False
+    op_cal_tflops=False
+    recompute_activation_function_num_layers=None
+    recompute_norm_num_layers=None
+    unaligned_linear=False
+    use_ascend_mc2=False
+    recompute_in_bubble=False
+    recompute_in_advance=False
+    pipeline_num_transformer_layers=None
+    schedules_method=None
+    gemm_gradient_accumulation_fusion=False
+    moe_tp_extend_ep=False
+    n_shared_experts=False
+    moe_allgather_overlap_comm=False
+    moe_alltoall_overlap_comm=False
+    moe_fb_overlap=False
+    moe_unperm2_mem_optim_swap=False
+    enable_fine_grained_expert_placement=False
+    virtual_optimizer=None
+    dist_train=False
+    tokenizer_name_or_path=False
+    param_and_grad_buffer_pad=False
+    reuse_fp32_param =False
+    smart_swap=False
+    compress_dense="disable"
+    use_fusion_attn_v2=False
+    alibi_fusion_attn_type=None
+    multi_head_latent_attention=False
+    auto_settings=False
 
     def __post_init__(self):
         super().__post_init__()

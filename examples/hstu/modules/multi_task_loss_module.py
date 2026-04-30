@@ -14,7 +14,8 @@
 # limitations under the License.
 
 import torch
-from commons.utils.nvtx_op import output_nvtx_hook
+# 注释 CUDA NVTX 相关内容
+# from commons.utils.nvtx_op import output_nvtx_hook
 
 
 def _decode_bits(encoded_labels: torch.Tensor, bit_width: int) -> torch.Tensor:
@@ -61,7 +62,7 @@ class MultiTaskLossModule(torch.nn.Module):
             ), "num_tasks should be 1 for multi-class classification"
             self._loss_modules = torch.nn.CrossEntropyLoss(reduction=reduction)
 
-    @output_nvtx_hook(nvtx_tag="loss computation")
+    # @output_nvtx_hook(nvtx_tag="loss computation")
     def forward(self, merged_logits, labels) -> torch.Tensor:
         """
         Forward pass of the MultiTaskLossModule.

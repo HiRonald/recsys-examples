@@ -3,7 +3,8 @@
 from typing import Dict, Tuple, Union
 
 import torch
-from commons.utils.nvtx_op import output_nvtx_hook
+# 注释 CUDA NVTX 相关内容
+# from commons.utils.nvtx_op import output_nvtx_hook
 from configs.hstu_config import HSTUConfig, HSTULayerType
 from dataset.utils import RankingBatch, RetrievalBatch
 from megatron.core.transformer.module import MegatronModule
@@ -37,18 +38,20 @@ class HSTUBlock(MegatronModule):
         self._preprocessor = HSTUBlockPreprocessor(config, is_inference=False)
         self._postprocessor = HSTUBlockPostprocessor(is_inference=False)
 
-        HSTULayerImpl = (
-            FusedHSTULayer
-            if config.hstu_layer_type == HSTULayerType.FUSED
-            else DebugHSTULayer
-            if config.hstu_layer_type == HSTULayerType.DEBUG
-            else NativeHSTULayer
-        )
+        # HSTULayerImpl = (
+        #     FusedHSTULayer
+        #     if config.hstu_layer_type == HSTULayerType.FUSED
+        #     else DebugHSTULayer
+        #     if config.hstu_layer_type == HSTULayerType.DEBUG
+        #     else NativeHSTULayer
+        # )
+        # NPU 暂不支持 FusedHSTULayer 使用的 CUTLASS/Triton，强制使用 NativeHSTULayer
+        HSTULayerImpl = NativeHSTULayer
         self._attention_layers = torch.nn.ModuleList(
             [HSTULayerImpl(config) for l in range(self.config.num_layers)]
         )
 
-    @output_nvtx_hook(nvtx_tag="HSTUBlock", hook_key_or_attr_name="values")
+    # @output_nvtx_hook(nvtx_tag="HSTUBlock", hook_key_or_attr_name="values")
     def forward(
         self,
         embeddings: Dict[str, JaggedTensor],

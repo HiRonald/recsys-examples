@@ -181,17 +181,29 @@ class SequenceDataset(IterableDataset[Batch]):
 
     # We do batching in our own
     def __len__(self) -> int:
+        if self._num_samples % self._global_batch_size < self._world_size:
+            return math.floor(self._num_samples / self._global_batch_size)
         return math.ceil(self._num_samples / self._global_batch_size)
 
     def __iter__(self) -> Iterator[Batch]:
         for i in range(len(self)):
-            local_batch_start = (
-                i * self._global_batch_size + self._rank * self._batch_size
-            )
-            local_batch_end = min(
-                i * self._global_batch_size + (self._rank + 1) * self._batch_size,
-                len(self._sample_ids),
-            )
+            if i == len(self) - 1:
+                last_batch_size = (len(self._sample_ids) - i * self._global_batch_size) // self._world_size
+                local_batch_start = (
+                    i * self._global_batch_size + self._rank * last_batch_size
+                )
+                local_batch_end = min(
+                    i * self._global_batch_size + (self._rank + 1) * last_batch_size,
+                    len(self._sample_ids),
+                )
+            else:
+                local_batch_start = (
+                    i * self._global_batch_size + self._rank * self._batch_size
+                )
+                local_batch_end = min(
+                    i * self._global_batch_size + (self._rank + 1) * self._batch_size,
+                    len(self._sample_ids),
+                )
             sample_ids = self._sample_ids[local_batch_start:local_batch_end]
 
             contextual_features: Dict[str, List[int]] = defaultdict(list)

@@ -34,11 +34,13 @@ from math import sqrt
 from typing import Optional
 
 import torch
-from commons.utils.nvtx_op import output_nvtx_hook
-from ops.triton_ops.common import set_static_max_seq_lens, set_use_runtime_max_seq_len
-from ops.triton_ops.triton_position import (  # type: ignore[attr-defined]
-    triton_add_position_embeddings,
-    triton_add_timestamp_positional_embeddings,
+# 注释 CUDA NVTX 相关内容
+# from commons.utils.nvtx_op import output_nvtx_hook
+# NPU 暂不支持 Triton 算子
+# from ops.triton_ops.common import set_static_max_seq_lens, set_use_runtime_max_seq_len
+from ops.pt_ops.pt_position import (  # type: ignore[attr-defined]
+    pytorch_add_position_embeddings,
+    pytorch_add_timestamp_positional_embeddings,
 )
 from torch.fx._symbolic_trace import is_fx_tracing
 
@@ -94,7 +96,7 @@ class HSTUPositionalEncoder(torch.nn.Module):
             set_use_runtime_max_seq_len(False)
             set_static_max_seq_lens(static_max_seq_len, static_max_seq_len)
 
-    @output_nvtx_hook(nvtx_tag="HSTUPositionalEncoder")
+    # @output_nvtx_hook(nvtx_tag="HSTUPositionalEncoder")
     def forward(
         self,
         max_seq_len: int,
@@ -108,7 +110,8 @@ class HSTUPositionalEncoder(torch.nn.Module):
         alpha = self._embedding_dim**0.5
         if self._use_time_encoding:
             seq_embeddings = seq_embeddings * alpha
-            seq_embeddings = triton_add_timestamp_positional_embeddings(
+            # 使用 PyTorch 实现替代 Triton 算子
+            seq_embeddings = seq_embeddings = pytorch_add_timestamp_positional_embeddings(
                 seq_embeddings=seq_embeddings,
                 seq_offsets=seq_offsets,
                 pos_embeddings=self._position_embeddings_weight,
@@ -133,8 +136,9 @@ class HSTUPositionalEncoder(torch.nn.Module):
                 )
                 _, D2 = self._position_embeddings_weight.shape
                 torch._assert(D2 == D, "wrong dense shape[1]")
-
-            seq_embeddings = triton_add_position_embeddings(
+            
+            # 使用 PyTorch 实现替代 Triton 算子
+            seq_embeddings = pytorch_add_position_embeddings(
                 jagged=seq_embeddings,
                 jagged_offsets=seq_offsets,
                 high_inds=high_inds,
@@ -158,7 +162,8 @@ class HSTUPositionalEncoder(torch.nn.Module):
                 )
                 _, D2 = self._position_embeddings_weight.shape
                 torch._assert(D2 == D, "wrong dense shape[1]")
-            seq_embeddings = triton_add_position_embeddings(
+            # 使用 PyTorch 实现替代 Triton 算子
+            seq_embeddings = pytorch_add_position_embeddings(
                 jagged=seq_embeddings,
                 jagged_offsets=seq_offsets,
                 high_inds=high_inds,

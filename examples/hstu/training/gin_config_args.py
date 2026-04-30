@@ -141,6 +141,8 @@ class NetworkArgs:
     num_attention_heads: int
     kv_channels: int
 
+    layer_type: str = "fused"
+
     hidden_dropout: float = 0.2
     norm_epsilon: float = 1e-5
     is_causal: bool = True
@@ -164,7 +166,9 @@ class NetworkArgs:
             "float16",
         ], "Only support bfloat16 and float16 precision for Network."
 
-        assert self.kernel_backend.lower() in ["cutlass", "triton", "pytorch"]
+        # 新增支持 npu_fused 后端
+        assert self.kernel_backend.lower() in ["cutlass", "triton", "pytorch", "npu_fused"]
+        assert self.layer_type.lower() in ["fused", "native"]
 
 
 @gin.configurable

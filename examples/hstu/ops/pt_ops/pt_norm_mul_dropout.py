@@ -30,8 +30,11 @@ def pytorch_norm_mul_dropout(
     linear_dim: int = -1,
 ) -> torch.Tensor:
     """
+    PyTorch 原生实现 NPU 融合算子
     All op is performed in fp32.
     """
+    if x.shape[0] == 0:
+        return x
     dtype = x.dtype
     x = x.to(torch.float32)
     u = u.reshape(u.size(0), -1).to(torch.float32)

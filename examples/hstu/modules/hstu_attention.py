@@ -13,11 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import abc
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import torch
-from commons.utils.nvtx_op import output_nvtx_hook
+# from commons.utils.nvtx_op import output_nvtx_hook
 from configs import KernelBackend
+
+# 禁用 NPU 内部格式优化
+torch.npu.config.allow_internal_format = False
 
 
 class HSTUAttention(torch.nn.Module):
@@ -133,6 +136,75 @@ class TorchHSTUAttention(HSTUAttention):
         ).view(-1, self.num_heads * self.linear_dim)
 
 
+class NpuFusedHSTUAttention(HSTUAttention):
+    """
+    Native HSTU implementation of the HSTU attention mechanism for NPU deivces.
+
+    The class implements the HSTU(Harvard Smith Tower Unit) attention module using PyTorch,
+    specifically tailored for NPU(Neural Processing Unit) devices. It processes input tensors
+    to compute the attention scores and outputs the transformed tensors.
+
+    Args:
+        num_heads (int): Number of attention heads.
+        attention_dim (int): Dimension of the attention.
+        linear_dim (int): Dimension of the linear layer.
+        is_causal (bool): Whether the attention is causal.
+    """
+    def __init__(
+            self,
+            num_heads: int,
+            attention_dim: int,
+            linear_dim: int,
+            is_causal:bool,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        self.attention_dim = attention_dim
+        self.linear_dim = linear_dim
+        self.is_causal = is_causal
+
+    def forward(self,
+                tq: torch.Tensor,  # (T, d)
+                tk: torch.Tensor,  # (T, d)
+                tv: torch.Tensor,  # (T, d)
+                offsets: torch.Tensor,  # (batch_size, 1)
+                max_seqlen: int,
+                target_group_size: int = 1,  # target == candidates
+                num_candidates: Optional[torch.Tensor] = None,
+                num_contextuals: Optional[Union[int, torch.Tensor]] = None,
+                ) -> torch.Tensor:  # T, d
+        """
+        Forward pass of the NpuFusedHSTUAttention module.
+
+        Args:
+            tq (torch.Tensor): Query tensor of shape (T, d), where T is the total sequence length across all batches and d is the dimensionality of the query.
+            tk (torch.Tensor): Key tensor of shape (T, d), where T is the total sequence length across all batches and d is the dimensionality of the key.
+            tv (torch.Tensor): Value tensor of shape (T, d), where T is the total sequence length across all batches and d is the dimensionality of the value.
+            offsets (torch.Tensor): Offsets tensor of shape (batch_size, 1), indicating the start position of each sequence in the batch.
+            max_seqlen (int): The maximum sequence length across all batches.
+            target_group_size (int): The size of the sub-candidate group where causal attention is applied only within a sub-group (usually in the case of ranking). Defaults to 1.
+            num_candidates (torch.Tensor): Tensor containing the number of candidates for each sequence.
+            num_contextuals (int | torch.Tensor | None): The number of contextuals for each sequence, could be a single integer or a tensor of shape (batch_size,) when different sequences have different number of contextuals.
+        Returns:
+            torch.Tensor: Output tensor of shape (T, d).
+        """
+
+        return torch.ops.mxrec.hstu_jagged(tq.view(-1, self.num_heads, self.attention_dim),
+                                          tk.view(-1, self.num_heads, self.attention_dim),
+                                          tv.view(-1, self.num_heads, self.attention_dim),
+                                          None,
+                                          None,
+                                          0,  # 0默认为下三角，跟TorchHSTUAttention的mask实现不一致
+                                          max_seqlen,
+                                          1.0 / max_seqlen,
+                                          offsets,
+                                          num_contextuals,
+                                          num_candidates,
+                                          target_group_size,
+                                          1.0 / (self.attention_dim**0.5),
+                                          ).view(-1, self.num_heads * self.attention_dim)
+
+
 class TritonHSTUAttention(HSTUAttention):
     """
     Triton-based HUST implementation.
@@ -239,7 +311,7 @@ class FusedHSTUAttention(HSTUAttention):
             self.linear_dim == self.attention_dim
         ), "only support linear_dim and attention_dim"
 
-    @output_nvtx_hook(nvtx_tag="FusedHSTUAttn")
+    # @output_nvtx_hook(nvtx_tag="FusedHSTUAttn")
     def forward(
         self,
         tq: torch.Tensor,  # (T, d)
@@ -332,7 +404,7 @@ class FusedHSTUAttentionHopper(HSTUAttention):
             self.linear_dim == self.attention_dim
         ), "only support linear_dim and attention_dim"
 
-    @output_nvtx_hook(nvtx_tag="FusedHSTUAttnHopper")
+    # @output_nvtx_hook(nvtx_tag="FusedHSTUAttnHopper")
     def forward(
         self,
         tq: torch.Tensor,  # (T, d)
@@ -416,7 +488,15 @@ def create_hstu_attention(
     Raises:
         ValueError: If the kernel backend is not supported.
     """
-    if kernel_backend == KernelBackend.CUTLASS:
+    # 使用 NPU 融合算子后端，调用 NPU 优化的高性能融合算子
+    if kernel_backend == KernelBackend.NPU_FUSED:
+        return NpuFusedHSTUAttention(
+            num_heads,
+            attention_dim,
+            linear_dim,
+            is_causal,
+        )
+    elif kernel_backend == KernelBackend.CUTLASS:
         sm_major_version = torch.cuda.get_device_properties(0).major
         sm_minor_version = torch.cuda.get_device_properties(0).minor
         if sm_major_version == 9 and sm_minor_version == 0:

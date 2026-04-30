@@ -14,25 +14,16 @@
 # limitations under the License.
 
 # pyre-strict
-from typing import Any, Dict, Tuple, Type, Union
+from typing import Any, Dict, List, Set, Tuple, Type, Union, Optional
 
 import torch
+import torch_npu
 import torch.distributed as dist
 import torchrec
 from configs.task_config import OptimizerParam
 
 # import our own finalize model grads
 from distributed.finalize_model_grads import finalize_model_grads
-from dynamicemb import DynamicEmbTableOptions
-from dynamicemb.get_planner import get_planner
-from dynamicemb.planner import (
-    DynamicEmbeddingShardingPlanner as DynamicEmbeddingShardingPlanner,
-)
-from dynamicemb.shard import (
-    DynamicEmbeddingBagCollectionSharder,
-    DynamicEmbeddingCollectionSharder,
-)
-from dynamicemb.utils import TORCHREC_TYPES
 from fbgemm_gpu.split_embedding_configs import EmbOptimType, SparseType
 from megatron.core import tensor_parallel
 from megatron.core.distributed import DistributedDataParallel as DDP
@@ -59,10 +50,118 @@ from torchrec.distributed.fbgemm_qcomm_codec import (
 from torchrec.distributed.model_parallel import DistributedModelParallel
 from torchrec.distributed.types import ShardedTensor, ShardingEnv
 from torchrec.optim.optimizers import in_backward_optimizer_filter
+from torchrec.modules.embedding_modules import (
+    EmbeddingBagCollection,
+    EmbeddingCollection,
+)
+from torchrec.distributed.embedding_types import ShardingType
+from torchrec.distributed.planner import Topology
+from torchrec.distributed.types import ShardingType
+from torchrec.modules.embedding_configs import EmbeddingConfig
+# 导入路径变更
+from dynamic_emb import (
+    DynamicEmbeddingEnumerator, 
+    DynamicEmbParameterConstraints, 
+    DynamicEmbTableOptions,
+    DynamicEmbeddingShardingPlanner, 
+    DynamicEmbeddingCollectionSharder,
+)
 
 DATA_PARALLEL_EMBEDDING_MODULE_NAME = "_data_parallel_embedding_collection"
 from megatron.core import parallel_state
 
+from megatron.core.distributed import TorchFullyShardedDataParallel
+
+class BatchFSDP(TorchFullyShardedDataParallel):
+    def forward(self, batch):
+        return self.module(batch)
+
+# TorchRec 嵌入模块类型集合，用于识别需要分片的模块
+TORCHREC_TYPES: Set[Type[Union[EmbeddingBagCollection, EmbeddingCollection]]] = {
+    EmbeddingBagCollection,
+    EmbeddingCollection,
+}
+
+# 流水线类型与计算内核的映射配置（模型并行）
+_pipeline_type_to_model_parallel_allowed_compute_kernels = {
+    "prefetch": ["fused_uvm_caching"],
+    "native": ["fused", "fused_uvm"],
+    "none": [],  # none does not constrain the compute kernels
+}
+# 流水线类型与计算内核的映射配置（数据并行）
+_pipeline_type_to_data_parallel_allowed_compute_kernels = {
+    "prefetch": ["dense"],
+    "native": ["dense"],
+    "none": [],
+}
+# 分片类型到允许计算内核的映射
+_sharding_type_to_allowed_compute_kernels = {
+    "data_parallel": _pipeline_type_to_data_parallel_allowed_compute_kernels,
+    "model_parallel": _pipeline_type_to_model_parallel_allowed_compute_kernels,
+}
+
+
+# 本地实现 get_planner 根据嵌入配置和并行策略生成分片计划
+def get_planner(
+    eb_configs: List[EmbeddingConfig],
+    data_parallel_embedding_table_names: Set[str],
+    dynamicemb_options_dict: Dict[str, DynamicEmbTableOptions],
+    device: torch.device,
+    pipeline_type: str = "none",
+    ddr_cap: int = 512 * 1024 * 1024 * 1024,  # Assume a Node have 512GB memory
+    intra_host_bw: int = 450e9,  # Nvlink bandwidth
+    inter_host_bw: int = 25e9,  # NIC bandwidth
+):
+    constraints = {}
+    for config in eb_configs:
+        if config.name in data_parallel_embedding_table_names:
+            compute_kernel_type = _sharding_type_to_allowed_compute_kernels[
+                "data_parallel"
+            ][pipeline_type]
+            constraint = DynamicEmbParameterConstraints(
+                sharding_types=[
+                    ShardingType.DATA_PARALLEL.value,
+                ],
+                use_dynamicemb=False,
+                compute_kernels=compute_kernel_type,
+            )
+        elif config.name in dynamicemb_options_dict:
+            # TODO add dynamic embedding compute kernels
+            compute_kernel_type = ["fused"]
+            dynamicemb_options = dynamicemb_options_dict[config.name]
+            constraint = DynamicEmbParameterConstraints(
+                sharding_types=[ShardingType.ROW_WISE.value],
+                dynamicemb_options=dynamicemb_options,
+                compute_kernels=compute_kernel_type,
+            )
+        else:
+            compute_kernel_type = _sharding_type_to_allowed_compute_kernels[
+                "model_parallel"
+            ][pipeline_type]
+            # TODO: save and load does not support table-wise sharding, disable them for now
+            constraint = DynamicEmbParameterConstraints(
+                sharding_types=[
+                    ShardingType.ROW_WISE.value,
+                ],
+                use_dynamicemb=False,
+                compute_kernels=compute_kernel_type,
+            )
+        constraints.update({config.name: constraint})
+
+    topology = Topology(
+        world_size=dist.get_world_size(),
+        compute_device=device.type,
+    )
+    enumerator = DynamicEmbeddingEnumerator(
+        topology=topology,
+        constraints=constraints,
+    )
+    return DynamicEmbeddingShardingPlanner(
+        eb_configs=eb_configs,
+        topology=topology,
+        constraints=constraints,
+        enumerator=enumerator,
+    )
 
 def apply_megatron_ddp(
     model: Union[DistributedModelParallel, torch.nn.Module],
@@ -260,10 +359,11 @@ def apply_dmp(
         )
     )
     sharders = [
-        DynamicEmbeddingBagCollectionSharder(
-            qcomm_codecs_registry=qcomm_codecs_registry,
-            fused_params=fused_params,
-        ),
+        # DynamicEmbeddingBagCollectionSharder(
+        #     qcomm_codecs_registry=qcomm_codecs_registry,
+        #     fused_params=fused_params,
+        # ),
+        # NPU 目前仅支持 DynamicEmbeddingCollectionSharder接口
         DynamicEmbeddingCollectionSharder(
             qcomm_codecs_registry=qcomm_codecs_registry,
             use_index_dedup=True,
@@ -280,11 +380,10 @@ def apply_dmp(
     with tensor_parallel.get_cuda_rng_tracker().fork("sharded-embedding-group-seed"):
         model = DistributedModelParallel(
             module=model,
-            env=ShardingEnv.from_process_group(pg),
             device=device,
             sharders=sharders,
             plan=plan,
-            init_data_parallel=False,
+            init_data_parallel=True, # 开启数据并行
         )
 
     # Create keyed optimizer
@@ -334,7 +433,7 @@ def make_optimizer_and_shard(
     pg: torch.distributed.ProcessGroup = None,
 ) -> Tuple[DistributedModelParallel, torch.optim.Optimizer]:
     if device is None:
-        device = torch.device("cuda", torch.cuda.current_device())
+        device = torch.device("npu", torch_npu.npu.current_device())
     if pg is None:
         pg = dist.group.WORLD
 
@@ -350,4 +449,99 @@ def make_optimizer_and_shard(
         model, config, dense_optimizer_param, device
     )
 
+    return model, dense_optimizer
+
+def apply_megatron_fsdp2(
+    dmp: DistributedModelParallel,
+    config: TransformerConfig,
+    dense_optimizer_param: OptimizerParam,
+    device: torch.device,
+):
+    model = dmp._dmp_wrapped_module
+    model = model.to(device)
+    if config.fp16 or config.bf16:
+        model = Float16Module(config, model)
+    
+    # FSDP2 configuration based on mindspeed docs
+    ddp_config = DistributedDataParallelConfig(
+        grad_reduce_in_fp32=True,
+        overlap_grad_reduce=False,
+        use_distributed_optimizer=False,  # Required for FSDP2
+        check_for_nan_in_grad=False,
+        bucket_size=True,
+    )
+    
+    # Configure FSDP2 to wrap only HSTUBlock modules as specified in fsdp2_config.yaml
+    from modules.hstu_block import HSTUBlock
+    from modules.native_hstu_layer import HSTULayer
+    
+    dmp._dmp_wrapped_module = BatchFSDP(
+        config,
+        ddp_config,
+        model,
+        sub_modules_to_wrap={HSTUBlock, HSTULayer},  # Wrap only HSTU modules
+    )  
+
+    param_dtype = torch.float32
+    if config.bf16:
+        param_dtype = torch.bfloat16
+    elif config.fp16:
+        param_dtype = torch.float16
+
+    dense_optimizer_config = OptimizerConfig(
+        optimizer=dense_optimizer_param.optimizer_str,
+        lr=dense_optimizer_param.learning_rate,
+        adam_beta1=dense_optimizer_param.adam_beta1,
+        adam_beta2=dense_optimizer_param.adam_beta2,
+        adam_eps=dense_optimizer_param.adam_eps,
+        params_dtype=param_dtype,
+        bf16=config.bf16,
+        fp16=config.fp16,
+    )
+    dense_optimizer = get_megatron_optimizer(
+        dense_optimizer_config, [dmp._dmp_wrapped_module]
+    )
+    return dmp, dense_optimizer
+
+def make_optimizer_and_shard_fsdp2(
+    model: torch.nn.Module,
+    config: TransformerConfig,
+    sparse_optimizer_param: OptimizerParam,
+    dense_optimizer_param: OptimizerParam,
+    dynamicemb_options_dict: Dict[str, DynamicEmbTableOptions] = {},
+    pipeline_type: str = "native",
+    device: torch.device = None,
+    pg: torch.distributed.ProcessGroup = None,
+) -> Tuple[BatchFSDP, torch.optim.Optimizer]:
+    """
+    Create FSDP2-wrapped model with optimizers based on MindSpeed FSDP2 implementation.
+    
+    This function:
+    1. Applies DMP (DistributedModelParallel) to handle embeddings
+    2. Applies FSDP2 to the dense layers (HSTU layers) using PyTorch FSDP2 API
+    3. Creates Megatron optimizer for dense parameters
+    
+    Args:
+        model (torch.nn.Module): Model to wrap.
+        config (TransformerConfig): Transformer configuration.
+        sparse_optimizer_param (OptimizerParam): Sparse optimizer parameters.
+        dense_optimizer_param (OptimizerParam): Dense optimizer parameters.
+        device (torch.device): Device to use.
+        pg (torch.distributed.ProcessGroup): Process group.
+    
+    Returns:
+        Tuple[BatchFSDP, torch.optim.Optimizer]: FSDP-wrapped model and optimizer.
+    """
+    if device is None:
+        device = torch.device("npu", torch_npu.npu.current_device())
+    if pg is None:
+        pg = dist.group.WORLD
+    
+    model = apply_dmp(
+        model, dynamicemb_options_dict, sparse_optimizer_param, pg, device, pipeline_type
+    )
+    model, dense_optimizer = apply_megatron_fsdp2(
+        model, config, dense_optimizer_param, device
+    )
+    
     return model, dense_optimizer

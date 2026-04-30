@@ -956,6 +956,13 @@ class JaggedMegatronTrainNonePipeline:
             with nvtx.annotate("## backward ##"):
                 local_loss_average = local_loss[0] / reporting_loss[1] * dp_size
                 local_loss_average.backward()
+            
+            # unshard when reshard_after_forward is True
+            from torch.distributed.fsdp import FSDPModule
+            fsdp_root = self._model.module
+            for module in fsdp_root.modules():
+                if isinstance(module, FSDPModule):
+                    module.unshard()
 
             with nvtx.annotate("## finalize_model_grads ##"):
                 if isinstance(self._model.module, DistributedDataParallel):

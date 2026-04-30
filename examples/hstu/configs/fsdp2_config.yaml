@@ -1,0 +1,37 @@
+# FSDP2 Configuration for GR Model
+# Based on: https://mindspeed-mm.readthedocs.io/zh-cn/latest/config/fsdp2%E9%85%8D%E7%BD%AE.html#fsdp2-config
+
+# Sharding configuration
+sharding_size: Null  # Use all available processes for sharding
+
+# Reshard parameters after forward pass
+# 设置为true时，会在每个forward pass后reshard参数，这会引入额外的通信成本，建议在参数量较大时开启
+reshard_after_forward: false
+
+# Mixed precision settings
+param_dtype: "fp32"  # Parameter data type
+reduce_dtype: "fp32"  # Gradient reduction data type
+output_dtype: "bf16" # Output data type
+cast_forward_inputs: true # Cast forward inputs to param_dtype
+
+# CPU offloading settings
+offload_to_cpu: false  # Disable CPU offloading for better performance
+pin_memory: true       # Only effective if offload_to_cpu is true
+
+# Prefetch settings
+num_to_forward_prefetch: 1
+
+# Modules to wrap with FSDP2
+# 只包装HSTUBlock模块
+sub_modules_to_wrap:
+  - "modules.hstu_block.HSTUBlock"
+  - "modules.native_hstu_layer.HSTULayer"
+
+# 根据提供的模型结构，忽略除HSTUBlock之外的所有网络层
+ignored_modules:
+  # 自定义模块
+  - "modules.multi_task_loss_module.MultiTaskLossModule"
+  - "modules.metrics.metric_modules.MultiClassificationTaskMetric"
+  - "torchrec_embcache.distributed.embedding.EmbCacheShardedEmbeddingCollection"
+  - "dynamic_emb.distributed.embedding.ShardedDynamicEmbeddingCollection"
+  - "modules.mlp.MLP"

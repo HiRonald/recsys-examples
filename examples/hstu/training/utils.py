@@ -28,7 +28,7 @@ from configs import (
     PositionEncodingConfig,
     get_hstu_config,
 )
-from dynamicemb import DynamicEmbTableOptions
+from dynamic_emb import DynamicEmbTableOptions
 from modules.embedding import ShardedEmbeddingConfig
 from training.gin_config_args import (
     BenchmarkDatasetArgs,
@@ -172,15 +172,21 @@ def create_hstu_config(
         kernel_backend = KernelBackend.TRITON
     elif network_args.kernel_backend == "pytorch":
         kernel_backend = KernelBackend.PYTORCH
+    # 新增支持 npu_fused 后端
+    elif network_args.kernel_backend == "npu_fused":
+        kernel_backend = KernelBackend.NPU_FUSED
     else:
         raise ValueError(
             f"Kernel backend {network_args.kernel_backend} is not supported."
         )
+    # 修改 layer_type 判断逻辑：从自动根据 TP size 判断改为根据配置参数
     layer_type = None
-    if tensor_model_parallel_args.tensor_model_parallel_size == 1:
+    if network_args.layer_type == "fused":
         layer_type = HSTULayerType.FUSED
-    else:
+    elif network_args.layer_type == "native":
         layer_type = HSTULayerType.NATIVE
+    else:
+        raise ValueError(f"Layer type {network_args.layer_type} is not supported.")
 
     position_encoding_config = PositionEncodingConfig(
         num_position_buckets=network_args.num_position_buckets,
@@ -375,12 +381,17 @@ def create_dynamic_optitons_dict(
     dynamic_options_dict: Dict[str, DynamicEmbTableOptions] = {}
     for embedding_args in embedding_args_list:
         if isinstance(embedding_args, DynamicEmbeddingArgs):
-            from dynamicemb import DynamicEmbCheckMode, DynamicEmbEvictStrategy
-
+            # 修改导入路径并新增初始化参数
+            from dynamic_emb.distributed.dynamicemb_config import DynamicEmbEvictStrategy
+            from dynamic_emb import DynamicEmbCheckMode, DynamicEmbInitializerArgs, DynamicEmbInitializerMode
             embedding_args.calculate_and_reset_global_hbm_for_values(
                 hidden_size, embedding_dim_multiplier
             )
             dynamic_options_dict[embedding_args.table_name] = DynamicEmbTableOptions(
+                initializer_args=DynamicEmbInitializerArgs(
+                    # 新增初始化参数配置（均匀分布）
+                    mode=DynamicEmbInitializerMode.UNIFORM,
+                ),
                 global_hbm_for_values=embedding_args.global_hbm_for_values,
                 evict_strategy=DynamicEmbEvictStrategy.LRU
                 if embedding_args.evict_strategy == "lru"
@@ -388,7 +399,7 @@ def create_dynamic_optitons_dict(
                 safe_check_mode=DynamicEmbCheckMode.IGNORE,
                 bucket_capacity=128,
                 training=training,
-                caching=embedding_args.caching,
+                caching=False, # NPU 暂不支持 caching
             )
     return dynamic_options_dict
 
@@ -606,25 +617,33 @@ def get_dataset_and_embedding_args() -> (
         ]
     elif dataset_args.dataset_name == "ml-20m":
         return dataset_args, [
-            EmbeddingArgs(
+            # EmbeddingArgs(
+            #     feature_names=["rating"],
+            #     table_name="action_weights",
+            #     item_vocab_size_or_capacity=11,
+            #     sharding_type="data_parallel",
+            # ),
+            # NPU 暂仅支持 DynamicEmbeddingArgs
+           DynamicEmbeddingArgs(
                 feature_names=["rating"],
                 table_name="action_weights",
                 item_vocab_size_or_capacity=11,
+                item_vocab_gpu_capacity_ratio=0.5,
                 sharding_type="data_parallel",
-            ),
+            ),            
             DynamicEmbeddingArgs(
                 feature_names=["movie_id"],
                 table_name="movie_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=True,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=True,
+                caching=False,
             ),
         ]
     else:

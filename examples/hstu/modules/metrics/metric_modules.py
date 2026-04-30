@@ -23,8 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torchmetrics.classification as classification_metrics
-from commons.utils.nvtx_op import output_nvtx_hook
-from dynamicemb.planner import (
+# 注释 CUDA NVTX 相关内容
+# from commons.utils.nvtx_op import output_nvtx_hook
+from dynamic_emb import (
     DynamicEmbeddingShardingPlanner as DynamicEmbeddingShardingPlanner,
 )
 from ops.collective_ops import grouped_allgatherv_tensor_list
@@ -196,7 +197,7 @@ class MultiClassificationTaskMetric(BaseTaskMetric):
         self.training = False
 
     # return a
-    @output_nvtx_hook("ranking metrics", backward=False)
+    # @output_nvtx_hook("ranking metrics", backward=False)
     def forward(self, multi_task_logits, targets):
         """
         Forward one eval batch, this forward returns None object.
@@ -277,7 +278,7 @@ class RetrievalTaskMetricWithSampling(BaseTaskMetric):
         self._cache_target_ids: List[torch.Tensor] = []
         self._chunk_size = 512
 
-    @output_nvtx_hook("retrieval metrics", backward=False)
+    # @output_nvtx_hook("retrieval metrics", backward=False)
     def forward(
         self,
         query_embeddings: torch.Tensor,  # preds, dense embedding tensor

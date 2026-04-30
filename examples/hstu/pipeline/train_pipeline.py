@@ -23,6 +23,8 @@
 
 import abc
 import logging
+import os
+import time
 from collections import deque
 from typing import (
     Any,
@@ -144,18 +146,18 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         # pyre-ignore
         self._stream_context = (
             torch.get_device_module(self._device).stream
-            if self._device.type in ["cuda", "mtia"]
+            if self._device.type in ["cuda", "mtia", "npu"]
             else torch.cuda.stream
         )
 
         self._memcpy_stream: Optional[torch.Stream] = (
             (torch.get_device_module(device).Stream(priority=-1))
-            if device.type in ["cuda", "mtia"]
+            if device.type in ["cuda", "mtia", "npu"]
             else None
         )
         self._data_dist_stream: Optional[torch.Stream] = (
             (torch.get_device_module(device).Stream(priority=-1))
-            if device.type in ["cuda", "mtia"]
+            if device.type in ["cuda", "mtia", "npu"]
             else None
         )
 
@@ -623,14 +625,22 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         self._context = PrefetchTrainPipelineContext(version=0)
         self._prefetch_stream: Optional[torch.Stream] = (
             (torch.get_device_module(device).Stream())
-            if self._device.type in ["cuda", "mtia"]
+            if self._device.type in ["cuda", "mtia", "npu"]
             else None
         )
         self._default_stream: Optional[torch.Stream] = (
             (torch.get_device_module(self._device).Stream())
-            if self._device.type in ["cuda", "mtia"]
+            if self._device.type in ["cuda", "mtia", "npu"]
             else None
         )
+        self._prefetch_debug: bool = os.getenv("HSTU_PREFETCH_DEBUG", "1").lower() in (
+            "1",
+            "true",
+        )
+        self._prefetch_debug_interval: int = int(
+            os.getenv("HSTU_PREFETCH_DEBUG_INTERVAL", "20")
+        )
+        self._progress_step: int = 0
         self._batch_ip3: Optional[In] = None
 
     def _fill_pipeline(self, dataloader_iter: Iterator[In]) -> None:
@@ -889,7 +899,28 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
             # bwd => read & write to cache/host
             # the cache might be in a dangling state that a key is either not in cache or not in host.
             # thererfore we enforce a sync: prefetch should be finished to avoid race condition.
-            torch.cuda.current_stream().wait_stream(self._prefetch_stream)
+            sync_begin = time.perf_counter()
+            if self._prefetch_stream is not None:
+                torch.get_device_module(self._device).current_stream().wait_stream(
+                    self._prefetch_stream
+                )
+            elif self._prefetch_debug:
+                logger.warning(
+                    "[prefetch-debug] prefetch_stream is None on device=%s; skip wait_stream sync.",
+                    self._device,
+                )
+            sync_ms = (time.perf_counter() - sync_begin) * 1000.0
+            self._progress_step += 1
+            if self._prefetch_debug and (
+                self._progress_step % self._prefetch_debug_interval == 0
+            ):
+                logger.warning(
+                    "[prefetch-debug] step=%d sync_wait_ms=%.3f has_prefetch_stream=%s has_data_dist_stream=%s",
+                    self._progress_step,
+                    sync_ms,
+                    self._prefetch_stream is not None,
+                    self._data_dist_stream is not None,
+                )
             # backward
             with nvtx.annotate("## backward ##"):
                 dp_size = parallel_state.get_data_parallel_world_size()

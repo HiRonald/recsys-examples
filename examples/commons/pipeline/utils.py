@@ -253,7 +253,7 @@ def recursive_record_stream(
     res: Union[torch.Tensor, Pipelineable, Iterable[Any], Dict[Any, Any]],
     stream: torch.Stream,
 ) -> None:
-    if isinstance(res, torch.Tensor) and res.device.type in ["cuda", "mtia"]:
+    if isinstance(res, torch.Tensor) and res.device.type in ["cuda", "mtia", "npu"]:
         res.record_stream(stream)
     elif isinstance(res, Pipelineable):
         res.record_stream(stream)
@@ -334,7 +334,7 @@ class PipelinedPostproc(torch.nn.Module):
             # pyre-ignore
             self._stream_context = (
                 torch.get_device_module(device).stream
-                if device.type in ["cuda", "mtia"]
+                if device.type in ["cuda", "mtia", "npu"]
                 else torch.cuda.stream
             )
         else:
@@ -501,7 +501,7 @@ class BaseForward(Generic[TForwardContext]):
         self._module = module
         self._context = context
         self._stream = stream
-        self._device: torch.device = stream.device if stream else torch.device("cuda")
+        self._device: torch.device = stream.device if stream else torch.device("cpu")
 
     @property
     def name(self) -> str:

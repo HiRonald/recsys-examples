@@ -23,6 +23,8 @@
 
 import abc
 import logging
+import os
+import time
 from collections import deque
 from typing import (
     Any,
@@ -149,18 +151,18 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         # pyre-ignore
         self._stream_context = (
             torch.get_device_module(self._device).stream
-            if self._device.type in ["cuda", "mtia"]
+            if self._device.type in ["cuda", "mtia", "npu"]
             else torch.cuda.stream
         )
 
         self._memcpy_stream: Optional[torch.Stream] = (
             (torch.get_device_module(device).Stream(priority=-1))
-            if device.type in ["cuda", "mtia"]
+            if device.type in ["cuda", "mtia", "npu"]
             else None
         )
         self._data_dist_stream: Optional[torch.Stream] = (
             (torch.get_device_module(device).Stream(priority=-1))
-            if device.type in ["cuda", "mtia"]
+            if device.type in ["cuda", "mtia", "npu"]
             else None
         )
 
@@ -186,12 +188,49 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         self._model_fwd: Callable[[Optional[In]], Tuple[torch.Tensor, Out]] = (
             custom_model_fwd if custom_model_fwd else model
         )
+        self._stream_debug: bool = os.environ.get("RECSYS_STREAM_DEBUG", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self._stream_debug_rank0_only: bool = os.environ.get(
+            "RECSYS_STREAM_DEBUG_RANK0_ONLY", "1"
+        ).lower() in ("1", "true", "yes")
+        self._stream_step: int = 0
+        self._debug_stream(
+            "pipeline_init "
+            + f"device={self._device} "
+            + f"memcpy_stream={self._stream_name(self._memcpy_stream)} "
+            + f"data_dist_stream={self._stream_name(self._data_dist_stream)}"
+        )
 
         # DEPRECATED FIELDS
         self._batch_i: Optional[In] = None
         self._batch_ip1: Optional[In] = None
         self._batch_ip2: Optional[In] = None
         self._context: TrainPipelineContext = context_type(version=0)
+
+    def _stream_name(self, stream: Optional[torch.Stream]) -> str:
+        if stream is None:
+            return "none"
+        for attr in ("npu_stream", "cuda_stream", "stream_id"):
+            if hasattr(stream, attr):
+                try:
+                    return f"{attr}={getattr(stream, attr)}"
+                except Exception:
+                    pass
+        return str(stream)
+
+    def _debug_stream(self, message: str) -> None:
+        if not self._stream_debug:
+            return
+        if torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+        else:
+            rank = 0
+        if self._stream_debug_rank0_only and rank != 0:
+            return
+        logger.info("[stream-debug][rank=%d][ts=%.6f] %s", rank, time.perf_counter(), message)
 
     def detach(self) -> torch.nn.Module:
         """
@@ -393,6 +432,9 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
                 `self._execute_all_batches=True`, then returns None.
         """
         context = self._create_context()
+        self._debug_stream(
+            f"h2d_begin ctx={context.index} memcpy_stream={self._stream_name(self._memcpy_stream)}"
+        )
         with nvtx.annotate(f"## copy_batch_to_gpu_and_shuffle {self._next_index} ##"):
             with self._stream_context(self._memcpy_stream):
                 batch = self._next_batch(dataloader_iter)
@@ -402,6 +444,9 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
                     batch = self._batch_shuffle(batch)
                 elif not self._execute_all_batches:
                     raise StopIteration
+                self._debug_stream(
+                    f"h2d_end ctx={context.index} has_batch={batch is not None}"
+                )
                 return batch, context
 
     def _next_batch(self, dataloader_iter: Iterator[In]) -> Optional[In]:
@@ -430,6 +475,9 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         """
         if batch is None:
             return
+        self._debug_stream(
+            f"input_dist_begin ctx={context.index} data_dist_stream={self._stream_name(self._data_dist_stream)}"
+        )
         with record_function(f"## start_sparse_data_dist {context.index} ##"):
             with self._stream_context(self._data_dist_stream):
                 _wait_for_batch(batch, self._memcpy_stream)
@@ -446,12 +494,16 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
                     self._pipelined_postprocs, original_contexts
                 ):
                     module.set_context(context)
+        self._debug_stream(f"input_dist_end ctx={context.index}")
 
     def wait_sparse_data_dist(self, context: TrainPipelineContext) -> None:
         """
         Waits on the input dist splits requests to get the input dist tensors requests,
         and populates the context with them.
         """
+        self._debug_stream(
+            f"wait_input_dist_begin ctx={context.index} fused_requests={len(context.fused_splits_awaitables)}"
+        )
         with record_function(f"## wait_sparse_data_dist {context.index} ##"):
             with self._stream_context(self._data_dist_stream):
                 for names, awaitable in context.fused_splits_awaitables:
@@ -459,6 +511,7 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
                         context.input_dist_tensors_requests[name] = request
         context.input_dist_splits_requests.clear()
         context.fused_splits_awaitables.clear()
+        self._debug_stream(f"wait_input_dist_end ctx={context.index}")
 
     def _copy_batch_to_gpu_and_shuffle(
         self, dataloader_iter: Iterator[In]
@@ -582,15 +635,20 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         self._context = PrefetchTrainPipelineContext(version=0)
         self._prefetch_stream: Optional[torch.Stream] = (
             (torch.get_device_module(device).Stream())
-            if self._device.type in ["cuda", "mtia"]
+            if self._device.type in ["cuda", "mtia", "npu"]
             else None
         )
         self._default_stream: Optional[torch.Stream] = (
             (torch.get_device_module(self._device).Stream())
-            if self._device.type in ["cuda", "mtia"]
+            if self._device.type in ["cuda", "mtia", "npu"]
             else None
         )
         self._batch_ip3: Optional[In] = None
+        self._debug_stream(
+            "prefetch_pipeline_init "
+            + f"prefetch_stream={self._stream_name(self._prefetch_stream)} "
+            + f"default_stream={self._stream_name(self._default_stream)}"
+        )
 
     def _fill_pipeline(self, dataloader_iter: Iterator[In]) -> None:
         # pipeline is already filled
@@ -660,6 +718,9 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         """
         if batch is None:
             return
+        self._debug_stream(
+            f"prefetch_begin prefetch_stream={self._stream_name(self._prefetch_stream)}"
+        )
         self._context.module_input_post_prefetch.clear()
         self._context.module_contexts_post_prefetch.clear()
 
@@ -684,6 +745,7 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
                     self._context.module_contexts_post_prefetch[
                         forward._name
                     ] = self._context.module_contexts.pop(forward._name)
+        self._debug_stream("prefetch_end")
 
 
 class JaggedMegatronTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
@@ -817,6 +879,8 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
         )
 
     def progress(self, dataloader_iter: Iterator[In]) -> Tuple[torch.Tensor, Out]:
+        self._stream_step += 1
+        self._debug_stream(f"step_begin step={self._stream_step}")
         self._fill_pipeline(dataloader_iter)
 
         if self._model.training:
@@ -827,6 +891,9 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
 
         with nvtx.annotate("## wait_for_batch ##"):
             _wait_for_batch(cast(In, self._batch_i), self._prefetch_stream)
+        self._debug_stream(
+            f"wait_for_batch_done step={self._stream_step} prefetch_stream={self._stream_name(self._prefetch_stream)}"
+        )
 
         with nvtx.annotate("## copy_batch_to_gpu_and_shuffle ##"):
             self._batch_ip2 = self._copy_batch_to_gpu_and_shuffle(dataloader_iter)
@@ -851,7 +918,12 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
             # bwd => read & write to cache/host
             # the cache might be in a dangling state that a key is either not in cache or not in host.
             # thererfore we enforce a sync: prefetch should be finished to avoid race condition.
-            torch.cuda.current_stream().wait_stream(self._prefetch_stream)
+            torch.get_device_module(self._device).current_stream().wait_stream(
+                self._prefetch_stream
+            )
+            self._debug_stream(
+                f"prefetch_sync_done step={self._stream_step} before_backward=1"
+            )
             # backward
             with nvtx.annotate("## backward ##"):
                 dp_size = parallel_state.get_data_parallel_world_size()
@@ -875,6 +947,7 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
 
         self._batch_i = self._batch_ip1
         self._batch_ip1 = self._batch_ip2
+        self._debug_stream(f"step_end step={self._stream_step}")
 
         return reporting_loss, output
 
@@ -915,9 +988,7 @@ class JaggedMegatronTrainNonePipeline:
 
         with nvtx.annotate("## loss postprocess ##"):
             collective_assert(not torch.isnan(losses).any(), "loss has nan value")
-            local_tokens = torch.tensor(
-                losses.size(0), device=torch.device("cuda", torch.cuda.current_device())
-            ).float()
+            local_tokens = torch.tensor(losses.size(0), device=self._device).float()
             local_loss = torch.cat([torch.sum(losses).view(1), local_tokens.view(1)])
             reporting_loss = local_loss.clone().detach()
             # [allreduced_sum_loss, allreduced_sum_tokens]

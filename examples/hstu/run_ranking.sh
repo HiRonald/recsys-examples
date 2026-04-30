@@ -69,7 +69,7 @@ config_file=./training/configs/movielen_ranking.gin
 torchrun \
     --nproc_per_node ${WORLD_SIZE} \
     --master_addr localhost \
-    --master_port 6000 \
+    --master_port 29505 \
     ${py_file} \
     --gin-config-file ${config_file} \
     --epochs 50 \

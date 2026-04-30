@@ -54,10 +54,16 @@ def dmp_batch_to_tp(batch: Any, exclude_features: bool = True) -> Any:
     if hasattr(batch, "labels") and batch.labels is not None:
         output_batch.labels = gatherv_along_first_dim(batch.labels, tp_pg)
     # reduce max seqlen
+    if batch.num_candidates is not None:
+        device = batch.num_candidates.device
+    elif hasattr(batch, "labels") and batch.labels is not None:
+        device = batch.labels.values().device
+    else:
+        device = batch.features.values().device
     feat_to_seqlen_tensor = torch.tensor(
         list(batch.feature_to_max_seqlen.values()),
         dtype=torch.int32,
-        device=torch.device("cuda"),
+        device=device,
     )
     torch.distributed.all_reduce(
         feat_to_seqlen_tensor, op=torch.distributed.ReduceOp.MAX, group=tp_pg

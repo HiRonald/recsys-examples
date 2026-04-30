@@ -145,7 +145,7 @@ def train_with_pipeline(
     ddp_num_contextuals = []
     ddp_num_candidates = []
     # using a tensor on gpu to avoid d2h copy
-    tokens_logged = torch.zeros(1).cuda().float()
+    tokens_logged = torch.zeros(1, device=pipeline._device).float()
     # limit the number of iters to max_train_iters
     # we support max_train_iters > n_batches, i.e. multiple epochs
     train_loader_iter = islice(cycle(iter(train_loader)), max_train_iters)
@@ -180,7 +180,7 @@ def train_with_pipeline(
             torch_npu.profiler.ProfilerActivity.CPU,
             torch_npu.profiler.ProfilerActivity.NPU
             ],
-        schedule=torch_npu.profiler.schedule(wait=10, warmup=0, active=1, repeat=1, skip_first=1),
+        schedule=torch_npu.profiler.schedule(wait=10, warmup=1, active=3, repeat=1, skip_first=1),
         on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./result"),
         record_shapes=False,
         profile_memory=False,

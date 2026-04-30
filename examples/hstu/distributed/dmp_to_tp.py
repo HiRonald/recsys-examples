@@ -60,7 +60,7 @@ def dmp_batch_to_tp(
     feat_to_seqlen_tensor = torch.tensor(
         list(batch.feature_to_max_seqlen.values()),
         dtype=torch.int32,
-        device=torch.device("cuda"),
+        device=batch.features.values().device,
     )
     torch.distributed.all_reduce(
         feat_to_seqlen_tensor, op=torch.distributed.ReduceOp.MAX, group=tp_pg

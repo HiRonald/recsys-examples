@@ -944,7 +944,7 @@ class JaggedMegatronTrainNonePipeline:
         with nvtx.annotate("## loss postprocess ##"):
             collective_assert(not torch.isnan(losses).any(), "loss has nan value")
             local_tokens = torch.tensor(
-                losses.size(0), device=torch.device("cuda", torch.cuda.current_device())
+                losses.size(0), device=self._device
             ).float()
             local_loss = torch.cat([torch.sum(losses).view(1), local_tokens.view(1)])
             reporting_loss = local_loss.clone().detach()

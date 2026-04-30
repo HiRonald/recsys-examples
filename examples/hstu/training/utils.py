@@ -399,7 +399,7 @@ def create_dynamic_optitons_dict(
                 safe_check_mode=DynamicEmbCheckMode.IGNORE,
                 bucket_capacity=128,
                 training=training,
-                caching=False, # NPU 暂不支持 caching
+                caching=embedding_args.caching,
             )
     return dynamic_options_dict
 
@@ -628,22 +628,22 @@ def get_dataset_and_embedding_args() -> (
                 feature_names=["rating"],
                 table_name="action_weights",
                 item_vocab_size_or_capacity=11,
-                item_vocab_gpu_capacity_ratio=0.5,
+                item_vocab_gpu_capacity_ratio=2,
                 sharding_type="data_parallel",
             ),            
             DynamicEmbeddingArgs(
                 feature_names=["movie_id"],
                 table_name="movie_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
-                caching=False,
+                item_vocab_size_or_capacity=5456,
+                item_vocab_gpu_capacity_ratio=2,
+                caching=True,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
-                caching=False,
+                item_vocab_size_or_capacity=27700,
+                item_vocab_gpu_capacity_ratio=2,
+                caching=True,
             ),
         ]
     else:

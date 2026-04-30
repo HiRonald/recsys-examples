@@ -201,13 +201,13 @@ def main():
         pipeline = pipeline_factory(
             model_train,
             dense_optimizer,
-            device=torch.device("cuda", torch_npu.npu.current_device()),
+            device=torch.device("npu", torch_npu.npu.current_device()),
         )
     else:
         pipeline = JaggedMegatronTrainNonePipeline(
             model_train,
             dense_optimizer,
-            device=torch.device("cuda", torch_npu.npu.current_device()),
+            device=torch.device("npu", torch_npu.npu.current_device()),
         )
     train_with_pipeline(
         pipeline,

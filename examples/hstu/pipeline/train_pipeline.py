@@ -611,6 +611,9 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         custom_model_fwd: Optional[
             Callable[[Optional[In]], Tuple[torch.Tensor, Out]]
         ] = None,
+        prefetch_overlap_mode: Optional[str] = None,
+        prefetch_debug: Optional[bool] = None,
+        prefetch_debug_interval: Optional[int] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -633,15 +636,32 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
             if self._device.type in ["cuda", "mtia", "npu"]
             else None
         )
-        self._prefetch_debug: bool = os.getenv("HSTU_PREFETCH_DEBUG", "1").lower() in (
-            "1",
-            "true",
+        self._prefetch_debug: bool = (
+            prefetch_debug
+            if prefetch_debug is not None
+            else os.getenv("HSTU_PREFETCH_DEBUG", "1").lower() in ("1", "true")
         )
-        self._prefetch_debug_interval: int = int(
-            os.getenv("HSTU_PREFETCH_DEBUG_INTERVAL", "20")
+        self._prefetch_debug_interval: int = (
+            prefetch_debug_interval
+            if prefetch_debug_interval is not None
+            else int(os.getenv("HSTU_PREFETCH_DEBUG_INTERVAL", "20"))
+        )
+        self._prefetch_overlap_mode: str = (
+            prefetch_overlap_mode.lower()
+            if prefetch_overlap_mode is not None
+            else os.getenv("HSTU_PREFETCH_OVERLAP_MODE", "safe").lower()
+        )
+        self._prefetch_overlap_aggressive: bool = (
+            self._prefetch_overlap_mode == "aggressive"
         )
         self._progress_step: int = 0
         self._batch_ip3: Optional[In] = None
+        if self._prefetch_debug:
+            logger.warning(
+                "[prefetch-debug] overlap_mode=%s (aggressive=%s).",
+                self._prefetch_overlap_mode,
+                self._prefetch_overlap_aggressive,
+            )
 
     def _fill_pipeline(self, dataloader_iter: Iterator[In]) -> None:
         # pipeline is already filled
@@ -853,6 +873,9 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
         custom_model_fwd: Optional[
             Callable[[Optional[In]], Tuple[torch.Tensor, Out]]
         ] = None,
+        prefetch_overlap_mode: Optional[str] = None,
+        prefetch_debug: Optional[bool] = None,
+        prefetch_debug_interval: Optional[int] = None,
     ) -> None:
         super().__init__(
             model,
@@ -862,6 +885,9 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
             apply_jit,
             pipeline_postproc,
             custom_model_fwd,
+            prefetch_overlap_mode,
+            prefetch_debug,
+            prefetch_debug_interval,
         )
 
     def progress(self, dataloader_iter: Iterator[In]) -> Tuple[torch.Tensor, Out]:
@@ -894,13 +920,28 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
             )
         with nvtx.annotate("## prefetch ##"):
             self._prefetch(self._batch_ip1)
+        started_input_dist = False
+        if self._model.training and self._prefetch_overlap_aggressive:
+            # Overlap mode: issue input_dist for batch i+2 earlier so it can run
+            # alongside backward/optimizer work of current batch.
+            with nvtx.annotate("## input_dist ##"):
+                self._start_sparse_data_dist(self._batch_ip2)
+                started_input_dist = True
         if self._model.training:
             # prefetch => Load to cache & might invalidate cache & flush to host
             # bwd => read & write to cache/host
             # the cache might be in a dangling state that a key is either not in cache or not in host.
             # thererfore we enforce a sync: prefetch should be finished to avoid race condition.
             sync_begin = time.perf_counter()
-            if self._prefetch_stream is not None:
+            if self._prefetch_overlap_aggressive:
+                if self._prefetch_debug and (
+                    (self._progress_step + 1) % self._prefetch_debug_interval == 0
+                ):
+                    logger.warning(
+                        "[prefetch-debug] overlap_mode=aggressive skip backward prefetch sync at step=%d.",
+                        self._progress_step + 1,
+                    )
+            elif self._prefetch_stream is not None:
                 torch.get_device_module(self._device).current_stream().wait_stream(
                     self._prefetch_stream
                 )
@@ -939,8 +980,9 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
             with nvtx.annotate("## optimizer ##"):
                 self._optimizer.step()
 
-        with nvtx.annotate("## input_dist ##"):
-            self._start_sparse_data_dist(self._batch_ip2)
+        if not started_input_dist:
+            with nvtx.annotate("## input_dist ##"):
+                self._start_sparse_data_dist(self._batch_ip2)
 
         self._batch_i = self._batch_ip1
         self._batch_ip1 = self._batch_ip2

@@ -193,16 +193,21 @@ def main():
 
     maybe_load_ckpts(trainer_args.ckpt_load_dir, model, dense_optimizer)
     if trainer_args.pipeline_type in ["prefetch", "native"]:
-        pipeline_factory = (
-            JaggedMegatronPrefetchTrainPipelineSparseDist
-            if trainer_args.pipeline_type == "prefetch"
-            else JaggedMegatronTrainPipelineSparseDist
-        )
-        pipeline = pipeline_factory(
-            model_train,
-            dense_optimizer,
-            device=torch.device("npu", torch_npu.npu.current_device()),
-        )
+        if trainer_args.pipeline_type == "prefetch":
+            pipeline = JaggedMegatronPrefetchTrainPipelineSparseDist(
+                model_train,
+                dense_optimizer,
+                device=torch.device("npu", torch_npu.npu.current_device()),
+                prefetch_overlap_mode=trainer_args.prefetch_overlap_mode,
+                prefetch_debug=trainer_args.prefetch_debug,
+                prefetch_debug_interval=trainer_args.prefetch_debug_interval,
+            )
+        else:
+            pipeline = JaggedMegatronTrainPipelineSparseDist(
+                model_train,
+                dense_optimizer,
+                device=torch.device("npu", torch_npu.npu.current_device()),
+            )
     else:
         pipeline = JaggedMegatronTrainNonePipeline(
             model_train,

@@ -399,7 +399,7 @@ def create_dynamic_optitons_dict(
                 safe_check_mode=DynamicEmbCheckMode.IGNORE,
                 bucket_capacity=128,
                 training=training,
-                caching=embedding_args.caching,
+                caching=True,
             )
     return dynamic_options_dict
 
@@ -627,7 +627,7 @@ def get_dataset_and_embedding_args() -> (
            DynamicEmbeddingArgs(
                 feature_names=["rating"],
                 table_name="action_weights",
-                item_vocab_size_or_capacity=11,
+                item_vocab_size_or_capacity=2048,
                 item_vocab_gpu_capacity_ratio=2,
                 sharding_type="data_parallel",
             ),            

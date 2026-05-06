@@ -46,10 +46,25 @@ class TrainerArgs:
     # - native -> overlap [h2d, input dist, fwd+bwd]
     # - prefetch -> overlap [h2d, input dist, prefetch, fwd+bwd]
     pipeline_type: str = "native"  # none, native, prefetch
+    # prefetch tuning options
+    # - safe -> keep conservative sync order
+    # - aggressive -> overlap input_dist with backward and skip pre-bwd prefetch sync
+    prefetch_overlap_mode: str = "safe"  # safe, aggressive
+    prefetch_debug: bool = True
+    prefetch_debug_interval: int = 20
 
     def __post_init__(self):
         if isinstance(self.max_train_iters, str):
             self.max_train_iters = int(self.max_train_iters)
+        if isinstance(self.prefetch_debug_interval, str):
+            self.prefetch_debug_interval = int(self.prefetch_debug_interval)
+        if isinstance(self.prefetch_debug, str):
+            self.prefetch_debug = self.prefetch_debug.lower() in ("1", "true")
+        self.prefetch_overlap_mode = self.prefetch_overlap_mode.lower()
+        assert self.prefetch_overlap_mode in [
+            "safe",
+            "aggressive",
+        ], "prefetch_overlap_mode should be in ['safe', 'aggressive']"
 
 
 @dataclass

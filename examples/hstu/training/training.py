@@ -155,6 +155,23 @@ def train_with_pipeline(
     iter_slices = batched(train_loader_iter, n)
     start_iter = 0
     pipeline._model.train()
+
+    PROFILE_ENABLE = os.environ.get("GPU_PROFILE", "0").lower() in ("1", "true")
+    if PROFILE_ENABLE:
+        prof = torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+                ],
+            schedule=torch.profiler.schedule(wait=10, warmup=0, active=1,repeat=1,skip_first=1),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler("./result"),
+            profile_memory=False,
+            with_stack=True,
+            with_modules=True,
+            with_flops=False,
+            )
+        prof.start()
+
     for batched_iterator in iter_slices:
         # for one slice(every eval interval)
         for train_iter in count(start_iter):
@@ -184,6 +201,8 @@ def train_with_pipeline(
                 ddp_num_contextuals.append(ddp_num_contextual.view(-1))
                 ddp_num_candidates.append(ddp_num_candidate.view(-1))
                 tokens_logged += reporting_loss[1]
+                if PROFILE_ENABLE:
+                    prof.step()
                 torch.cuda.nvtx.range_pop()
             except StopIteration:
                 start_iter = train_iter
@@ -217,3 +236,5 @@ def train_with_pipeline(
                 eval_loader=eval_loader,
             )
             pipeline._model.train()
+    if PROFILE_ENABLE:
+        prof.stop()

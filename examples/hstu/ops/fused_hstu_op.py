@@ -301,6 +301,7 @@ class FusedHSTULayerFunction(torch.autograd.Function):
             num_targets = (
                 num_targets.to(torch.int32) if num_targets is not None else None
             )
+            scaling_seqlen = -1
             jagged_attn_output, _ = cutlass_hstu_varlen_fwd(
                 q,
                 k,
@@ -309,6 +310,7 @@ class FusedHSTULayerFunction(torch.autograd.Function):
                 seq_offsets_q,
                 max_seqlen_q,
                 max_seqlen_q,
+                scaling_seqlen,
                 num_contexts,
                 num_targets,
                 target_group_size,
@@ -607,6 +609,7 @@ class FusedHSTULayerFunction(torch.autograd.Function):
             sm_major_version = torch.cuda.get_device_properties(0).major
             assert dout.dim() == 3
             if sm_major_version == 8:
+                scaling_seqlen = -1
                 dq, dk, dv, _ = flash_attn_cuda_ampere.varlen_bwd(
                     dout,
                     q,
@@ -619,6 +622,7 @@ class FusedHSTULayerFunction(torch.autograd.Function):
                     seq_offsets_q,
                     max_seqlen_q,
                     max_seqlen_q,
+                    scaling_seqlen,
                     num_contexts,
                     num_targets,
                     target_group_size,
@@ -631,6 +635,7 @@ class FusedHSTULayerFunction(torch.autograd.Function):
                     False,  # deterministic
                 )
             elif sm_major_version == 9:
+                scaling_seqlen = -1
                 fp8_args = (None,) * 11
                 dq, dk, dv, _ = flash_attn_cuda_hopper.varlen_bwd(
                     dout,
@@ -647,6 +652,7 @@ class FusedHSTULayerFunction(torch.autograd.Function):
                     seq_offsets_q,
                     max_seqlen_q,
                     max_seqlen_q,
+                    scaling_seqlen,
                     num_contexts,
                     num_targets,
                     target_group_size,

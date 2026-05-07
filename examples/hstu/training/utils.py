@@ -178,7 +178,19 @@ def create_hstu_config(
         )
     layer_type = None
     if tensor_model_parallel_args.tensor_model_parallel_size == 1:
-        layer_type = HSTULayerType.FUSED
+        # FUSED path uses hstu_attn CUTLASS backward, which in v25.09 only supports sm80.
+        # On Ada (e.g. L20, sm89), force NATIVE to avoid runtime failure in training.
+        sm_major, sm_minor = torch.cuda.get_device_capability()
+        if kernel_backend == KernelBackend.CUTLASS and (
+            sm_major != 8 or sm_minor != 0
+        ):
+            print(
+                f"[hstu] FUSED + CUTLASS backward is only supported on sm80, but found sm{sm_major}{sm_minor}. "
+                "Falling back to NATIVE layer for training."
+            )
+            layer_type = HSTULayerType.NATIVE
+        else:
+            layer_type = HSTULayerType.FUSED
     else:
         layer_type = HSTULayerType.NATIVE
 
@@ -388,7 +400,8 @@ def create_dynamic_optitons_dict(
                 safe_check_mode=DynamicEmbCheckMode.IGNORE,
                 bucket_capacity=128,
                 training=training,
-                caching=embedding_args.caching,
+                # caching=embedding_args.caching,
+                caching=True,
             )
     return dynamic_options_dict
 
@@ -606,24 +619,31 @@ def get_dataset_and_embedding_args() -> (
         ]
     elif dataset_args.dataset_name == "ml-20m":
         return dataset_args, [
-            EmbeddingArgs(
+            # EmbeddingArgs(
+            #     feature_names=["rating"],
+            #     table_name="action_weights",
+            #     item_vocab_size_or_capacity=11,
+            #     sharding_type="data_parallel",
+            # ),
+            DynamicEmbeddingArgs(
                 feature_names=["rating"],
                 table_name="action_weights",
-                item_vocab_size_or_capacity=11,
-                sharding_type="data_parallel",
+                item_vocab_size_or_capacity=2048,
+                item_vocab_gpu_capacity_ratio=2,
+                caching=True,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["movie_id"],
                 table_name="movie_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
+                item_vocab_size_or_capacity=5456,
+                item_vocab_gpu_capacity_ratio=2,
                 caching=True,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
+                item_vocab_size_or_capacity=27700,
+                item_vocab_gpu_capacity_ratio=2,
                 caching=True,
             ),
         ]

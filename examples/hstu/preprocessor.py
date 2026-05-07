@@ -316,7 +316,7 @@ class MovielensDataProcessor(DataProcessor):
         """
         Preprocess the raw data. The support dataset are "ml-1m" and "ml-20m".
         """
-        self.download()
+        # self.download()
         users, log_df = self.load()
 
         log_df["movie_id"] = log_df["movie_id"].astype(int)
@@ -758,7 +758,9 @@ def get_common_preprocessors(dataset_path: str):
         file_name="KuaiRand-27K.tar.gz",
         prefix="KuaiRand-27K",
     )
-    return {key: locals()[f"{key}_dp".replace("-", "_")] for key in dataset_names}
+    return {"ml-1m": ml_1m_dp,
+            "ml-20m": ml_20m_dp,
+            "kuairand-27": kuairand_27k_dp,}
 
 
 if __name__ == "__main__":

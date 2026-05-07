@@ -80,11 +80,19 @@ if not torch._running_with_deploy():
 class TrainPipeline(abc.ABC, Generic[In, Out]):
     @abc.abstractmethod
     def progress(self, dataloader_iter: Iterator[In]) -> Out:
+        """推进一次训练流水线，消耗/预取 batch，并返回当前步输出。"""
         pass
 
 
 class TrainPipelineSparseDist(TrainPipeline[In, Out]):
     """
+    中文概览：
+    这个 Pipeline 的核心是把三个阶段并行重叠起来：
+    1) H2D 拷贝（memcpy stream）
+    2) 稀疏 input_dist（data_dist stream）
+    3) 前向/反向/优化器（默认计算 stream）
+    通过“当前 batch 计算 + 下一个 batch 通信 + 下下个 batch 搬运”来隐藏 all2all 延迟。
+
     This pipeline overlaps device transfer, and `ShardedModule.input_dist()` with
     forward and backward. This helps hide the all2all latency while preserving the
     training forward / backward ordering.
@@ -127,6 +135,7 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
             Callable[[Optional[In]], Tuple[torch.Tensor, Out]]
         ] = None,
     ) -> None:
+        # 训练相关对象
         self._model = model
         self._optimizer = optimizer
         self._device = device
@@ -169,6 +178,7 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         self._model_attached = True
         self._pipeline_postproc = pipeline_postproc
 
+        # 用 deque 维护流水线中的 batch 和其上下文（context 一一对应）
         self._next_index: int = 0
         self.contexts: Deque[TrainPipelineContext] = deque()
         self._pipelined_modules: List[ShardedModule] = []
@@ -289,31 +299,33 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
             dataloader_iter stops, the last batch, do nothing
         """
 
-        # pipeline is already filled with max capacity (2)
+        # [阶段A] 队列已满（两个 batch 在飞行）时不需要补充。
         if len(self.batches) >= 2:
             return
 
+        # [阶段B] 如果只剩最后一个 batch 且配置了“收尾执行”，这里直接返回，
+        # 让 progress 去把最后一个 batch 正常跑完。
         # executes last batch in pipeline, when there is only one batch in the pipeline
         # TODO: this _execute_all_batches doesn't really work here D43546239. it will
         # just throw an exception at copy_to_gpu when the dataloader is exhausted
         if self.batches and self._execute_all_batches:
             return
 
-        # batch i, data (batch) and context
+        # [阶段C] 取第一个 batch 入队（batch i），并创建对应 context。
         if not self.enqueue_batch(dataloader_iter):
             return
 
-        # modify the (sharded) sparse module forward, and invoke the first part of input_dist
+        # [阶段D] 首次初始化：重写 sparse module 的 forward，并启动 input_dist 第一阶段。
         self._init_pipelined_modules(
             # pyre-ignore [6]
             self.batches[0],
             self.contexts[0],
             self._pipelined_forward_type,
         )
-        # doing the second part of input_dist, the first part is invoked in _init_pipelined_modules
+        # [阶段E] 等待 input_dist 第一阶段结果，拿到后续 tensor 请求（第二阶段入口）。
         self.wait_sparse_data_dist(self.contexts[0])
 
-        # batch i+1
+        # [阶段F] 再补一个 batch（batch i+1），形成稳定的双 batch 管线。
         if not self.enqueue_batch(dataloader_iter):
             return
 
@@ -333,52 +345,57 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
             batches[2]: i+2 batch, for copy_batch_to_gpu (expecting non-exhausted dataloader iter)
         """
 
+        # 1) 防御式 attach：避免用户 detach 后忘记恢复，导致 forward 不是管线版本。
         # attach the model just in case the user forgets to call it, especially when the user
         # pauses the pipeline.progress and detach the model for other purpose.
         if not self._model_attached:
             self.attach(self._model)
 
-        # fill the pipeline is only needed for the beginning when the pipeline (batches) is empty
+        # 2) 冷启动填管线：初次调用时把 batch/context 填到可运行状态。
         self.fill_pipeline(dataloader_iter)
 
-        # here is the expected stop after exhausting all batches
+        # 3) 管线和数据都耗尽，正常结束迭代。
         if not self.batches:
             raise StopIteration
 
+        # 4) 当前 batch 的 context 绑定到重写后的模块 forward，确保本轮读对缓存/请求。
         # TODO: Remove once Bulk Eval migrated (needed for bwd compat, this class only)
         self._set_module_context(self.contexts[0])
 
         if self._model.training:
+            # 5) 每步反向前清梯度，避免梯度累积污染本步。
             with record_function("## zero_grad ##"):
                 self._optimizer.zero_grad()
 
+        # 6) 同步当前 batch 可用性：等待 H2D/input_dist 依赖满足后再做 forward。
         # wait for batches[0] being available on device, this should always be completed since
         # the input_dist of batches[0] has be invoked in previous iter. TODO: fact check
         self._wait_for_batch()
 
         if len(self.batches) >= 2:
-            # invoke splits all_to_all comms (first part of input_dist)
+            # 7) 提前启动“下一 batch”的 input_dist 第一阶段（split all2all）。
             self.start_sparse_data_dist(self.batches[1], self.contexts[1])
 
-        # batch i+2: load data and copy to gpu, the dataload iter will first exhaust here
+        # 8) 继续预取“下下 batch”（i+2）：这里最先触发 dataloader 耗尽。
         self.enqueue_batch(dataloader_iter)
 
-        # forward
+        # 9) 计算当前 batch 的前向，得到 loss 与业务输出。
         with record_function("## forward ##"):
             losses, output = self._model_fwd(self.batches[0])
 
         if len(self.batches) >= 2:
-            # invoke data (values, lengths, etc.) all_to_all comms (second part of input_dist)
+            # 10) 完成“下一 batch”的 input_dist 第二阶段，兑现张量请求。
             self.wait_sparse_data_dist(self.contexts[1])
 
         if self._model.training:
-            # backward
+            # 11) 反向传播（默认把 loss 在 batch 维求和后 backward）。
             self._backward(losses)
 
-            # update
+            # 12) 参数更新。
             with record_function("## optimizer ##"):
                 self._optimizer.step()
 
+        # 13) 出队当前 batch，推进窗口到下一步。
         self.dequeue_batch()
         return output
 
@@ -393,6 +410,8 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         context: TrainPipelineContext,
         pipelined_forward: Type[PipelinedForward] = PipelinedForward,
     ) -> None:
+        # 核心改写点：把可 pipeline 的 sparse 模块 forward 替换成 PipelinedForward，
+        # 并返回原始 forward 以支持 detach/恢复。
         (
             self._pipelined_modules,
             self._model,
@@ -447,8 +466,10 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         context = self._create_context()
         with nvtx.annotate(f"## copy_batch_to_gpu {self._next_index} ##"):
             with self._stream_context(self._memcpy_stream):
+                # 先从 dataloader 取 batch（内部避免对已耗尽迭代器反复 next）
                 batch = self._next_batch(dataloader_iter)
                 if batch is not None:
+                    # non_blocking=True 允许与其他 stream 重叠
                     batch = _to_device(batch, self._device, non_blocking=True)
                 elif not self._execute_all_batches:
                     raise StopIteration
@@ -482,6 +503,7 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
             return
         with record_function(f"## start_sparse_data_dist {context.index} ##"):
             with self._stream_context(self._data_dist_stream):
+                # 必须先等该 batch 的 H2D 完成，再做 input_dist
                 _wait_for_batch(batch, self._memcpy_stream)
 
                 original_contexts = [p.get_context() for p in self._pipelined_postprocs]
@@ -489,6 +511,7 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
                 # Temporarily set context for next iter to populate cache
                 for postproc_mod in self._pipelined_postprocs:
                     postproc_mod.set_context(context)
+                # input_dist 第一阶段：发起 split all2all 等异步请求
                 _start_data_dist(self._pipelined_modules, batch, context)
 
                 # Restore context for model fwd
@@ -505,8 +528,10 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
         with record_function(f"## wait_sparse_data_dist {context.index} ##"):
             with self._stream_context(self._data_dist_stream):
                 for names, awaitable in context.fused_splits_awaitables:
+                    # 把 awaitable 展开成模块名 -> request 的映射，供后续 forward 使用
                     for name, request in zip(names, awaitable.wait()):
                         context.input_dist_tensors_requests[name] = request
+        # 该 context 的本轮请求已兑现，清理中间状态避免重复消费
         context.input_dist_splits_requests.clear()
         context.fused_splits_awaitables.clear()
 
@@ -569,6 +594,10 @@ class TrainPipelineSparseDist(TrainPipeline[In, Out]):
 
 class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
     """
+    中文概览：
+    在 TrainPipelineSparseDist 的基础上再加入“embedding/cache 预取”阶段，
+    形成四段重叠：H2D -> input_dist -> prefetch -> fwd/bwd。
+
     This pipeline overlaps device transfer, `ShardedModule.input_dist()`, and cache
     prefetching with forward and backward. This helps hide the all2all latency while
     preserving the training forward / backward ordering.
@@ -661,33 +690,40 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         self._start_sparse_data_dist(self._batch_ip1)
 
     def progress(self, dataloader_iter: Iterator[In]) -> Out:
+        # 1) 初始化/补齐三段队列（当前、下一、下下 batch）
         self._fill_pipeline(dataloader_iter)
 
         if self._model.training:
+            # 2) 清梯度
             with record_function("## zero_grad ##"):
                 self._optimizer.zero_grad()
 
+        # 3) 等待当前 batch 的 prefetch 完成后进入 forward
         with record_function("## wait_for_batch ##"):
             _wait_for_batch(cast(In, self._batch_i), self._prefetch_stream)
 
+        # 4) 异步准备 batch i+2
         self._batch_ip2 = self._copy_batch_to_gpu(dataloader_iter)
 
+        # 5) 兑现 batch i+1 的 input_dist 请求
         self._wait_sparse_data_dist()
-        # forward
+        # 6) 前向计算当前 batch
         with record_function("## forward ##"):
             losses, output = self._model_fwd(self._batch_i)
 
+        # 7) 对 batch i+1 做预取，为下一步 forward 做准备
         self._prefetch(self._batch_ip1)
 
         if self._model.training:
-            # backward
+            # 8) 反向传播
             with record_function("## backward ##"):
                 torch.sum(losses, dim=0).backward()
 
-            # update
+            # 9) 参数更新
             with record_function("## optimizer ##"):
                 self._optimizer.step()
 
+        # 10) 启动 batch i+2 的 input_dist 第一阶段，并推进窗口
         self._start_sparse_data_dist(self._batch_ip2)
 
         self._batch_i = self._batch_ip1
@@ -701,6 +737,7 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         """
         if batch is None:
             return
+        # 每轮先清空上轮 prefetch 结果，避免脏数据
         self._context.module_input_post_prefetch.clear()
         self._context.module_contexts_post_prefetch.clear()
 
@@ -721,6 +758,7 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
                 for sharded_module in self._pipelined_modules:
                     forward = sharded_module.forward
                     data = data_per_pipelined_module[forward._name]
+                    # 把预取数据写入 context，下一轮 forward 可直接命中
                     self._context.module_input_post_prefetch[forward._name] = data
                     self._context.module_contexts_post_prefetch[
                         forward._name
@@ -760,6 +798,7 @@ class JaggedMegatronTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
             batches[2]: i+2 batch, for copy_batch_to_gpu (expecting non-exhausted dataloader iter)
         """
 
+        # 与基类流程一致，但 loss 处理/梯度同步按 Megatron 分布式语义定制。
         # attach the model just in case the user forgets to call it, especially when the user
         # pauses the pipeline.progress and detach the model for other purpose.
         if not self._model_attached:
@@ -777,6 +816,7 @@ class JaggedMegatronTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
 
         if self._model.training:
             with nvtx.annotate("## zero_grad ##"):
+                # 某些模型实现了 buffer 级清理，先调用再 zero_grad
                 if hasattr(self._model.module, "zero_grad_buffer"):
                     self._model.module.zero_grad_buffer()
                 self._optimizer.zero_grad()
@@ -799,6 +839,7 @@ class JaggedMegatronTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         with nvtx.annotate("## forward ##"):
             losses, output = self._model_fwd(self.batches[0])
         with nvtx.annotate("## loss postprocess ##"):
+            # loss 健康检查 + 汇总（sum_loss, token_count）用于跨 DP 规约
             collective_assert(not torch.isnan(losses).any(), "loss has nan value")
             local_tokens = torch.tensor(losses.size(0), device=self._device).float()
             local_loss = torch.cat([torch.sum(losses).view(1), local_tokens.view(1)])
@@ -816,6 +857,7 @@ class JaggedMegatronTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
             with nvtx.annotate("## backward ##"):
                 dp_size = parallel_state.get_data_parallel_world_size()
                 # in case of uneven jagged size across dp ranks.
+                # 用全局 token 数做归一化，再按 dp_size 缩放回等价平均梯度
                 local_loss_average = local_loss[0] / reporting_loss[1] * dp_size
                 local_loss_average.backward()
 
@@ -855,6 +897,7 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
         )
 
     def progress(self, dataloader_iter: Iterator[In]) -> Tuple[torch.Tensor, Out]:
+        # 1) 填充 prefetch 管线（当前/下一/下下）
         self._fill_pipeline(dataloader_iter)
 
         if self._model.training:
@@ -863,14 +906,16 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
                     self._model.module.zero_grad_buffer()
                 self._optimizer.zero_grad()
 
+        # 2) 等当前 batch 的 prefetch 依赖就绪
         with nvtx.annotate("## wait_for_batch ##"):
             _wait_for_batch(cast(In, self._batch_i), self._prefetch_stream)
 
+        # 3) 异步准备 i+2，并等待 i+1 的 input_dist 兑现
         with nvtx.annotate("## copy_batch_to_gpu ##"):
             self._batch_ip2 = self._copy_batch_to_gpu(dataloader_iter)
         with nvtx.annotate("## wait_sparse_data_dist ##"):
             self._wait_sparse_data_dist()
-        # forward
+        # 4) 前向
         reporting_loss = None
         with nvtx.annotate("## forward ##"):
             losses, output = self._model_fwd(self._batch_i)
@@ -883,12 +928,14 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
                 reporting_loss, group=parallel_state.get_data_parallel_group()
             )
         with nvtx.annotate("## prefetch ##"):
+            # 5) 为下一 batch 预取 embedding/cache
             self._prefetch(self._batch_ip1)
         if self._model.training:
             # prefetch => Load to cache & might invalidate cache & flush to host
             # bwd => read & write to cache/host
             # the cache might be in a dangling state that a key is either not in cache or not in host.
             # thererfore we enforce a sync: prefetch should be finished to avoid race condition.
+            # 6) 强制 prefetch stream 与当前计算流同步，避免 cache 读写竞争。
             torch.cuda.current_stream().wait_stream(self._prefetch_stream)
             # backward
             with nvtx.annotate("## backward ##"):
@@ -908,6 +955,7 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
             with nvtx.annotate("## optimizer ##"):
                 self._optimizer.step()
 
+        # 7) 启动 i+2 的 input_dist，并滑动窗口到下一步
         with nvtx.annotate("## input_dist ##"):
             self._start_sparse_data_dist(self._batch_ip2)
 
@@ -929,12 +977,14 @@ class JaggedMegatronTrainNonePipeline:
         self._device = device
 
     def progress(self, dataloader_iter: Iterator[In]) -> Out:
+        # 这是无 pipeline 的基线实现：严格串行 H2D -> forward -> backward -> step。
         dp_size = parallel_state.get_data_parallel_world_size() * 1.0
         with nvtx.annotate("## zero_grad ##"):
             if hasattr(self._model.module, "zero_grad_buffer"):
                 self._model.module.zero_grad_buffer()
             self._optimizer.zero_grad()
         with nvtx.annotate("## H2D ##"):
+            # 直接同步取下一个 batch 并搬到 device
             batch = next(dataloader_iter).to(self._device)
             # print(f'nopipeline batch.features: {batch.features.values()}')
 
@@ -942,6 +992,7 @@ class JaggedMegatronTrainNonePipeline:
             losses, output = self._model(batch)
 
         with nvtx.annotate("## loss postprocess ##"):
+            # 同样做 NaN 检查 + DP 规约，保证日志口径与 pipeline 版本一致
             collective_assert(not torch.isnan(losses).any(), "loss has nan value")
             local_tokens = torch.tensor(
                 losses.size(0), device=torch.device("cuda", torch.cuda.current_device())

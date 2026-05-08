@@ -643,6 +643,10 @@ class EmbeddingPipelinedForward(BaseForward[EmbeddingTrainPipelineContext]):
 class PrefetchPipelinedForward(BaseForward[PrefetchTrainPipelineContext]):
     """
     This pipeline is used in PrefetchTrainPipelineSparseDist
+
+    中文说明：
+    这是 prefetch 版本的模块 forward 代理。它不会在调用时再做 input_dist，
+    而是直接消费 prefetch 阶段提前放进 context 的数据与上下文，实现“先预取、后计算”。
     """
 
     def __init__(
@@ -663,15 +667,18 @@ class PrefetchPipelinedForward(BaseForward[PrefetchTrainPipelineContext]):
 
     # pyre-ignore [2, 24]
     def __call__(self, *input, **kwargs) -> Awaitable:
+        # 必须命中 prefetch 产物；否则说明调用顺序错了（比如直接调用了 model.forward）。
         assert (
             self._name in self._context.module_input_post_prefetch
         ), "Invalid PrefetchPipelinedForward usage, please do not directly call model.forward()"
+        # 从 context 中取出该模块预取好的 dist_input 与 module_context（一次性消费）
         data = self._context.module_input_post_prefetch.pop(self._name)
         ctx = self._context.module_contexts_post_prefetch.pop(self._name)
 
         # Make sure that both result of input_dist and context
         # are properly transferred to the current stream.
         if self._stream is not None:
+            # 等 prefetch stream 完成，避免当前计算流读到未完成的数据
             torch.get_device_module(self._device).current_stream().wait_stream(
                 self._stream
             )
@@ -682,8 +689,10 @@ class PrefetchPipelinedForward(BaseForward[PrefetchTrainPipelineContext]):
             ), f"{type(data)} must implement Multistreamable interface"
             data.record_stream(cur_stream)
 
+            # context 也要绑定到当前流，确保生命周期与访问时序正确
             ctx.record_stream(cur_stream)
 
+        # 直接进入 compute_and_output_dist：此时 input_dist 已在 prefetch 阶段完成
         return self._module.compute_and_output_dist(ctx, data)
 
 
@@ -1625,11 +1634,20 @@ def _prefetch_embeddings(
     data_dist_stream: Optional[torch.Stream],
     default_stream: Optional[torch.Stream],
 ) -> Dict[str, KJTList]:
+    """
+    prefetch 核心函数（每个 pipelined sharded module 执行一次）：
+    1) 从 context 取出 input_dist 的异步 request；
+    2) 在 data_dist stream 上 wait，拿到 dist_input；
+    3) 把 data/context 迁移到当前流与 default_stream；
+    4) 调用 sharded_module.prefetch(...) 预热缓存；
+    5) 返回模块名 -> data 映射，供后续 PrefetchPipelinedForward 消费。
+    """
     data_per_sharded_module = {}
     for sharded_module in pipelined_modules:
         forward = sharded_module.forward
         assert isinstance(forward, PrefetchPipelinedForward)
 
+        # 取出该模块在 input_dist 阶段登记的异步请求
         assert forward._name in context.input_dist_tensors_requests
         request = context.input_dist_tensors_requests.pop(forward._name)
         assert isinstance(request, Awaitable)
@@ -1637,12 +1655,14 @@ def _prefetch_embeddings(
             # Finish waiting on the dist_stream,
             # in case some delayed stream scheduling happens during the wait() call.
             with stream_context(data_dist_stream):
+                # 等待 all2all / input_dist 完成，拿到该模块 dist_input
                 data = request.wait()
 
         # Make sure that both result of input_dist and context
         # are properly transferred to the current stream.
         module_context = context.module_contexts[forward._name]
         if data_dist_stream is not None:
+            # 把 data_dist stream 结果同步到当前流，避免跨流竞态
             torch.get_device_module(device).current_stream().wait_stream(
                 data_dist_stream
             )
@@ -1657,10 +1677,12 @@ def _prefetch_embeddings(
             module_context.record_stream(cur_stream)
             module_context.record_stream(default_stream)
 
+        # 关键：执行模块级 prefetch，把 dist_input 对应向量预热到 cache/目标存储
         sharded_module.prefetch(
             ctx=module_context,
             dist_input=data,
             forward_stream=default_stream,
         )
+        # 保存给后续 forward 使用（PrefetchPipelinedForward.__call__ 会 pop 走）
         data_per_sharded_module[forward._name] = data
     return data_per_sharded_module

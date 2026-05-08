@@ -201,6 +201,9 @@ def apply_dmp(
     device: torch.device,
     pipeline_type: str = "native",
 ):
+    # prefetch 训练路径的总开关：来自上层 TrainerArgs.pipeline_type
+    # 这个开关会一路下沉到 fused_params["prefetch_pipeline"]，
+    # 最终影响 dynamic embedding kernel 是否启用预取流水。
     enable_prefetch_pipeline = pipeline_type == "prefetch"
     (
         sparse_opt_cls,
@@ -228,6 +231,7 @@ def apply_dmp(
         # only when compute kernel is FUSED_UVM_CACHING or KEY_VALUE are the below params effective.
         "cache_precision": SparseType.FP32,
         "stochastic_rounding": False,
+        # 关键参数：让底层 fused embedding kernel 知道是否启用 prefetch pipeline
         "prefetch_pipeline": enable_prefetch_pipeline,
     }
     eb_configs = []
@@ -251,6 +255,7 @@ def apply_dmp(
         set(data_parallel_embedding_table_names),
         dynamicemb_options_dict,
         device,
+        # planner 也接收 pipeline_type，以便做匹配该流水线的分片/执行规划。
         pipeline_type,
     )
     qcomm_codecs_registry = get_qcomm_codecs_registry(
@@ -344,6 +349,7 @@ def make_optimizer_and_shard(
         sparse_optimizer_param,
         pg,
         device,
+        # 把入口脚本里的 pipeline_type 继续透传给 sharding 阶段
         pipeline_type,
     )
     model, dense_optimizer = apply_megatron_ddp(

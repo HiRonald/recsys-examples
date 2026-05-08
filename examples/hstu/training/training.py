@@ -135,6 +135,11 @@ def train_with_pipeline(
     eval_loader: torch.utils.data.DataLoader,
     dense_optimizer: torch.optim.Optimizer,
 ):
+    """
+    prefetch 端到端训练驱动函数。
+    入口脚本构造好 pipeline 后，这里统一调用 `pipeline.progress(...)` 推进每个 step。
+    对 prefetch/native/none 三种实现，调用点一致、内部行为不同。
+    """
     gpu_timer = GPUTimer()
     max_train_iters = trainer_args.max_train_iters or len(train_loader)
     gpu_timer.start()
@@ -145,13 +150,12 @@ def train_with_pipeline(
     ddp_num_candidates = []
     # using a tensor on gpu to avoid d2h copy
     tokens_logged = torch.zeros(1).cuda().float()
-    # limit the number of iters to max_train_iters
-    # we support max_train_iters > n_batches, i.e. multiple epochs
+    # 限制总迭代数；当 max_train_iters > dataloader 长度时，通过 cycle 支持多轮 epoch
     train_loader_iter = islice(cycle(iter(train_loader)), max_train_iters)
 
-    # every eval iter
+    # 每 n 步训练后做一次 eval
     n = trainer_args.eval_interval if trainer_args.eval_interval else max_train_iters
-    # data loader is split into num_iters / eval_interval (iters) slices where each slice contains n batches
+    # 把训练迭代切成若干分段（每段 n 个 batch），用于“训练一段 -> 评估一次”的节奏。
     iter_slices = batched(train_loader_iter, n)
     start_iter = 0
     pipeline._model.train()
@@ -163,7 +167,7 @@ def train_with_pipeline(
                 torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA,
                 ],
-            schedule=torch.profiler.schedule(wait=10, warmup=0, active=1,repeat=1,skip_first=1),
+            schedule=torch.profiler.schedule(wait=100, warmup=0, active=3,repeat=1,skip_first=1),
             on_trace_ready=torch.profiler.tensorboard_trace_handler("./result"),
             profile_memory=False,
             with_stack=True,
@@ -173,7 +177,7 @@ def train_with_pipeline(
         prof.start()
 
     for batched_iterator in iter_slices:
-        # for one slice(every eval interval)
+        # 一个 slice 对应一次 eval_interval 窗口
         for train_iter in count(start_iter):
             if trainer_args.profile and train_iter == trainer_args.profile_step_start:
                 dist.barrier(device_ids=[torch.cuda.current_device()])
@@ -191,6 +195,11 @@ def train_with_pipeline(
                 save_ckpts(save_path, pipeline._model, dense_optimizer)
             try:
                 torch.cuda.nvtx.range_push(f"step {train_iter}")
+                # 关键调用：端到端 prefetch 调用链最终在这里触发。
+                # 当 pipeline 是 JaggedMegatronPrefetchTrainPipelineSparseDist 时，
+                # 每次 progress 都会执行：
+                #   填管线 -> wait current -> copy i+2 -> wait sparse dist ->
+                #   forward -> prefetch(i+1) -> backward/step -> start input_dist(i+2)
                 reporting_loss, (
                     local_loss,
                     logits,
@@ -205,6 +214,7 @@ def train_with_pipeline(
                     prof.step()
                 torch.cuda.nvtx.range_pop()
             except StopIteration:
+                # pipeline 在“数据耗尽且管线排空”时抛 StopIteration，切到下一 slice
                 start_iter = train_iter
                 torch.cuda.nvtx.range_pop()
                 break
@@ -228,6 +238,7 @@ def train_with_pipeline(
                 ddp_num_candidates = []
         # TODO CHECK if train pipeline is flushed
         if train_iter > 0 and train_iter % trainer_args.eval_interval == 0:
+            # 评估阶段仍复用同一个 pipeline.progress，但在 no_grad + eval 模式下执行
             pipeline._model.eval()
             evaluate(
                 pipeline,

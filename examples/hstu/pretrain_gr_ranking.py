@@ -102,6 +102,7 @@ def create_ranking_config() -> RankingConfig:
 
 
 def main():
+    # ==================== 阶段1：分布式环境与随机种子初始化 ====================
     init.initialize_distributed()
     init.initialize_model_parallel(
         tensor_model_parallel_size=tp_args.tensor_model_parallel_size
@@ -115,6 +116,8 @@ def main():
     task_config = create_ranking_config()
     model = get_ranking_model(hstu_config=hstu_config, task_config=task_config)
 
+    # ==================== 阶段2：构造 dynamic embedding 运行时选项 ====================
+    # 这里会根据优化器类型决定 embedding 向量存储倍率（是否需要附带 optimizer states）。
     dynamic_options_dict = create_dynamic_optitons_dict(
         embedding_args,
         network_args.hidden_size,
@@ -124,6 +127,8 @@ def main():
         ),
     )
 
+    # ==================== 阶段3：模型切分 + 优化器创建 ====================
+    # 注意：pipeline_type 会传入 sharding 逻辑，影响 fused kernel 的 prefetch_pipeline 开关。
     optimizer_param = create_optimizer_params(optimizer_args)
     model_train, dense_optimizer = make_optimizer_and_shard(
         model,
@@ -152,12 +157,17 @@ def main():
     )
 
     maybe_load_ckpts(trainer_args.ckpt_load_dir, model, dense_optimizer)
+    # ==================== 阶段4：按 pipeline_type 选择训练流水线实现 ====================
+    # - prefetch: H2D + input_dist + prefetch + fwd/bwd 重叠
+    # - native:   H2D + input_dist + fwd/bwd 重叠
+    # - none:     串行执行（无重叠）
     if trainer_args.pipeline_type in ["prefetch", "native"]:
         pipeline_factory = (
             JaggedMegatronPrefetchTrainPipelineSparseDist
             if trainer_args.pipeline_type == "prefetch"
             else JaggedMegatronTrainPipelineSparseDist
         )
+        # 关键：prefetch 路径会实例化 JaggedMegatronPrefetchTrainPipelineSparseDist
         pipeline = pipeline_factory(
             model_train,
             dense_optimizer,
@@ -169,6 +179,8 @@ def main():
             dense_optimizer,
             device=torch.device("cuda", torch.cuda.current_device()),
         )
+    # ==================== 阶段5：统一训练入口 ====================
+    # 训练循环内部通过 pipeline.progress(...) 驱动具体流水线，每步都会走到对应实现。
     train_with_pipeline(
         pipeline,
         stateful_metric_module,

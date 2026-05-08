@@ -45,6 +45,10 @@ class TrainerArgs:
     # - none -> no overlap
     # - native -> overlap [h2d, input dist, fwd+bwd]
     # - prefetch -> overlap [h2d, input dist, prefetch, fwd+bwd]
+    # 中文说明：
+    # 这个字段是 prefetch 端到端链路的“总开关”，会影响：
+    # 1) 入口脚本选择哪种 TrainPipeline；
+    # 2) sharding/fused kernel 是否开启 prefetch_pipeline。
     pipeline_type: str = "native"  # none, native, prefetch
 
     def __post_init__(self):

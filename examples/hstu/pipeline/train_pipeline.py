@@ -640,7 +640,7 @@ class PrefetchTrainPipelineSparseDist(TrainPipelineSparseDist[In, Out]):
         self._prefetch_debug_interval: int = int(
             os.getenv("HSTU_PREFETCH_DEBUG_INTERVAL", "20")
         )
-        self._progress_step: int = 0
+        # self._progress_step: int = 0
         self._batch_ip3: Optional[In] = None
 
     def _fill_pipeline(self, dataloader_iter: Iterator[In]) -> None:
@@ -904,23 +904,23 @@ class JaggedMegatronPrefetchTrainPipelineSparseDist(
                 torch.get_device_module(self._device).current_stream().wait_stream(
                     self._prefetch_stream
                 )
-            elif self._prefetch_debug:
-                logger.warning(
-                    "[prefetch-debug] prefetch_stream is None on device=%s; skip wait_stream sync.",
-                    self._device,
-                )
-            sync_ms = (time.perf_counter() - sync_begin) * 1000.0
-            self._progress_step += 1
-            if self._prefetch_debug and (
-                self._progress_step % self._prefetch_debug_interval == 0
-            ):
-                logger.warning(
-                    "[prefetch-debug] step=%d sync_wait_ms=%.3f has_prefetch_stream=%s has_data_dist_stream=%s",
-                    self._progress_step,
-                    sync_ms,
-                    self._prefetch_stream is not None,
-                    self._data_dist_stream is not None,
-                )
+            # elif self._prefetch_debug:
+                # logger.warning(
+                #     "[prefetch-debug] prefetch_stream is None on device=%s; skip wait_stream sync.",
+                #     self._device,
+                # )
+            # sync_ms = (time.perf_counter() - sync_begin) * 1000.0
+            # self._progress_step += 1
+            # if self._prefetch_debug and (
+            #     self._progress_step % self._prefetch_debug_interval == 0
+            # ):
+                # logger.warning(
+                #     "[prefetch-debug] step=%d sync_wait_ms=%.3f has_prefetch_stream=%s has_data_dist_stream=%s",
+                #     self._progress_step,
+                #     sync_ms,
+                #     self._prefetch_stream is not None,
+                #     self._data_dist_stream is not None,
+                # )
             # backward
             with nvtx.annotate("## backward ##"):
                 dp_size = parallel_state.get_data_parallel_world_size()

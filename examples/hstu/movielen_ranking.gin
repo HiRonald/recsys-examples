@@ -4,9 +4,9 @@ TrainerArgs.eval_batch_size = 128
 TrainerArgs.eval_interval = 100
 TrainerArgs.log_interval = 100
 TrainerArgs.seed = 1234
-TrainerArgs.max_train_iters = 1000
+TrainerArgs.max_train_iters = 5000
 TrainerArgs.profile = False # 关闭原生性能分析
-TrainerArgs.pipeline_type = "none" # NPU 目前不支持流水线
+TrainerArgs.pipeline_type = "prefetch" # NPU 目前不支持流水线
 
 DatasetArgs.dataset_name = 'ml-20m'
 DatasetArgs.max_sequence_length = 200

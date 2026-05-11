@@ -399,7 +399,9 @@ def create_dynamic_optitons_dict(
                 safe_check_mode=DynamicEmbCheckMode.IGNORE,
                 bucket_capacity=128,
                 training=training,
-                caching=embedding_args.caching,
+                # caching=embedding_args.caching,
+                caching=True,
+                # caching=False,
             )
     return dynamic_options_dict
 
@@ -624,10 +626,34 @@ def get_dataset_and_embedding_args() -> (
             #     sharding_type="data_parallel",
             # ),
             # NPU 暂仅支持 DynamicEmbeddingArgs
-           DynamicEmbeddingArgs(
+            # 纯HBM
+            # DynamicEmbeddingArgs(
+            #     feature_names=["rating"],
+            #     table_name="action_weights",
+            #     item_vocab_size_or_capacity=11,
+            #     item_vocab_gpu_capacity_ratio=0.5,
+            #     sharding_type="data_parallel",
+            # ),            
+            # DynamicEmbeddingArgs(
+            #     feature_names=["movie_id"],
+            #     table_name="movie_id",
+            #     item_vocab_size_or_capacity=HASH_SIZE,
+            #     item_vocab_gpu_capacity_ratio=0.5,
+            #     caching=False,
+            # ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["user_id"],
+            #     table_name="user_id",
+            #     item_vocab_size_or_capacity=HASH_SIZE,
+            #     item_vocab_gpu_capacity_ratio=0.5,
+            #     caching=False,
+            # ),
+            
+            # 打开 caching，storage占比0.8
+            DynamicEmbeddingArgs(
                 feature_names=["rating"],
                 table_name="action_weights",
-                item_vocab_size_or_capacity=11,
+                item_vocab_size_or_capacity=2048,
                 item_vocab_gpu_capacity_ratio=2,
                 sharding_type="data_parallel",
             ),            
@@ -645,6 +671,7 @@ def get_dataset_and_embedding_args() -> (
                 item_vocab_gpu_capacity_ratio=2,
                 caching=True,
             ),
+
         ]
     else:
         raise ValueError(f"dataset {dataset_args.dataset_name} is not supported")

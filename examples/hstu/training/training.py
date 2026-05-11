@@ -157,6 +157,10 @@ def train_with_pipeline(
     start_iter = 0
     pipeline._model.train()
 
+    import time
+    start_time = time.time()
+    epoch = 0
+
     # 通过环境变量控制 NPU Profiler 开关
     PROFILE_ENABLE = os.environ.get("NPU_PROFILE", "0").lower() in ("1", "true")
     if PROFILE_ENABLE:
@@ -226,6 +230,10 @@ def train_with_pipeline(
                 start_iter = train_iter
                 # torch.cuda.nvtx.range_pop()
                 break
+
+            if train_iter % 10 == 0:
+                print(f"epoch: {epoch}, step: [{train_iter}/{trainer_args.max_train_iters}], loss = {reporting_loss[0] / reporting_loss[1]:.6f}, time = {time.time() - start_time}s")
+                start_time = time.time()
             # log
             if train_iter > 0 and (train_iter + 1) % trainer_args.log_interval == 0:
                 gpu_timer.stop()
@@ -254,5 +262,7 @@ def train_with_pipeline(
                 eval_loader=eval_loader,
             )
             pipeline._model.train()
+        epoch += 1
+        
     if PROFILE_ENABLE:
         prof.stop()

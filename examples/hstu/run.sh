@@ -72,7 +72,7 @@ export ASCEND_RT_VISIBLE_DEVICES=0
 torchrun \
     --nproc_per_node ${WORLD_SIZE} \
     --master_addr localhost \
-    --master_port 29505 \
+    --master_port 29405 \
     ${py_file} \
     --gin-config-file ${config_file} \
     2>&1 |tee temp_$(date '+%Y%m%d_%H%M%S').log

@@ -1,10 +1,10 @@
 # torchrun --nproc_per_node 1 --master_addr localhost --master_port 6000  ./hstu/pretrain_gr_ranking.py --gin-config-file examples/hstu/movielen_ranking.gin 
-TrainerArgs.train_batch_size = 128
+TrainerArgs.train_batch_size = 1024
 TrainerArgs.eval_batch_size = 128
 TrainerArgs.eval_interval = 100
 TrainerArgs.log_interval = 100
 TrainerArgs.seed = 1234
-TrainerArgs.max_train_iters = 1000
+TrainerArgs.max_train_iters = 3000
 TrainerArgs.profile = False
 TrainerArgs.pipeline_type = "none"
 

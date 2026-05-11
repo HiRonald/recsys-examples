@@ -401,7 +401,8 @@ def create_dynamic_optitons_dict(
                 bucket_capacity=128,
                 training=training,
                 # caching=embedding_args.caching,
-                caching=True,
+                caching=False,
+                # caching=True,
             )
     return dynamic_options_dict
 
@@ -619,33 +620,79 @@ def get_dataset_and_embedding_args() -> (
         ]
     elif dataset_args.dataset_name == "ml-20m":
         return dataset_args, [
-            # EmbeddingArgs(
+            # 关闭 caching，纯HBM
+            EmbeddingArgs(
+                feature_names=["rating"],
+                table_name="action_weights",
+                item_vocab_size_or_capacity=11,
+                sharding_type="data_parallel",
+            ),
+            # DynamicEmbeddingArgs(
             #     feature_names=["rating"],
             #     table_name="action_weights",
             #     item_vocab_size_or_capacity=11,
+            #     item_vocab_gpu_capacity_ratio=1,
             #     sharding_type="data_parallel",
             # ),
             DynamicEmbeddingArgs(
-                feature_names=["rating"],
-                table_name="action_weights",
-                item_vocab_size_or_capacity=2048,
-                item_vocab_gpu_capacity_ratio=2,
-                caching=True,
-            ),
-            DynamicEmbeddingArgs(
                 feature_names=["movie_id"],
                 table_name="movie_id",
-                item_vocab_size_or_capacity=5456,
-                item_vocab_gpu_capacity_ratio=2,
-                caching=True,
+                item_vocab_size_or_capacity=HASH_SIZE,
+                item_vocab_gpu_capacity_ratio=0.5,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
-                item_vocab_size_or_capacity=27700,
-                item_vocab_gpu_capacity_ratio=2,
-                caching=True,
+                item_vocab_size_or_capacity=HASH_SIZE,
+                item_vocab_gpu_capacity_ratio=0.5,
+                caching=False,
             ),
+            # # 打开 caching，storage占比0.8，设置方式1（怀疑有问题）
+            # DynamicEmbeddingArgs(
+            #     feature_names=["rating"],
+            #     table_name="action_weights",
+            #     # 实际rating表只有11个，但这里设置为2048，因为太小会报错大小小于一个桶？
+            #     item_vocab_size_or_capacity=2048,
+            #     item_vocab_gpu_capacity_ratio=2,
+            #     sharding_type="data_parallel",
+            # ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["movie_id"],
+            #     table_name="movie_id",
+            #     item_vocab_size_or_capacity=5456,
+            #     item_vocab_gpu_capacity_ratio=2,
+            #     caching=True,
+            # ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["user_id"],
+            #     table_name="user_id",
+            #     item_vocab_size_or_capacity=27700,
+            #     item_vocab_gpu_capacity_ratio=2,
+            #     caching=True,
+            # ),
+            # # 打开 caching，storage占比0.8，设置方式2
+            # DynamicEmbeddingArgs(
+            #     feature_names=["rating"],
+            #     table_name="action_weights",
+            #     item_vocab_size_or_capacity=2048,
+            #     item_vocab_gpu_capacity_ratio=1,
+            #     sharding_type="data_parallel",
+            # ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["movie_id"],
+            #     table_name="movie_id",
+            #     item_vocab_size_or_capacity=27280,
+            #     item_vocab_gpu_capacity_ratio=0.2,
+            #     caching=True,
+            # ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["user_id"],
+            #     table_name="user_id",
+            #     item_vocab_size_or_capacity=138500,
+            #     item_vocab_gpu_capacity_ratio=0.2,
+            #     caching=True,
+            # ),
         ]
     else:
         raise ValueError(f"dataset {dataset_args.dataset_name} is not supported")

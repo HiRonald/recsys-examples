@@ -132,6 +132,11 @@ def main():
         tensor_model_parallel_size=tp_args.tensor_model_parallel_size
     )
     init.set_random_seed(trainer_args.seed)
+
+    # 使用 msprobe 库设置固定所有随机种子，并移除 dropout
+    from msprobe.pytorch import seed_all
+    seed_all(seed = trainer_args.seed, mode = True, rm_dropout = True)
+
     free_memory, total_memory = torch_npu.npu.mem_get_info()
     print_rank_0(
         f"distributed env initialization done. Free cuda memory: {free_memory / (1024 ** 2):.2f} MB"

@@ -390,7 +390,10 @@ def create_dynamic_optitons_dict(
             dynamic_options_dict[embedding_args.table_name] = DynamicEmbTableOptions(
                 initializer_args=DynamicEmbInitializerArgs(
                     # 新增初始化参数配置（均匀分布）
-                    mode=DynamicEmbInitializerMode.UNIFORM,
+                    # mode=DynamicEmbInitializerMode.UNIFORM,
+                    # 精度对齐时设为CONSTANT，value=0.0
+                    mode=DynamicEmbInitializerMode.CONSTANT,
+                    value=0.0,
                 ),
                 global_hbm_for_values=embedding_args.global_hbm_for_values,
                 evict_strategy=DynamicEmbEvictStrategy.LRU
@@ -400,8 +403,8 @@ def create_dynamic_optitons_dict(
                 bucket_capacity=128,
                 training=training,
                 # caching=embedding_args.caching,
-                caching=True,
-                # caching=False,
+                # caching=True,
+                caching=False,
             )
     return dynamic_options_dict
 
@@ -627,50 +630,50 @@ def get_dataset_and_embedding_args() -> (
             # ),
             # NPU 暂仅支持 DynamicEmbeddingArgs
             # 纯HBM
-            # DynamicEmbeddingArgs(
-            #     feature_names=["rating"],
-            #     table_name="action_weights",
-            #     item_vocab_size_or_capacity=11,
-            #     item_vocab_gpu_capacity_ratio=0.5,
-            #     sharding_type="data_parallel",
-            # ),            
-            # DynamicEmbeddingArgs(
-            #     feature_names=["movie_id"],
-            #     table_name="movie_id",
-            #     item_vocab_size_or_capacity=HASH_SIZE,
-            #     item_vocab_gpu_capacity_ratio=0.5,
-            #     caching=False,
-            # ),
-            # DynamicEmbeddingArgs(
-            #     feature_names=["user_id"],
-            #     table_name="user_id",
-            #     item_vocab_size_or_capacity=HASH_SIZE,
-            #     item_vocab_gpu_capacity_ratio=0.5,
-            #     caching=False,
-            # ),
-            
-            # 打开 caching，storage占比0.8
             DynamicEmbeddingArgs(
                 feature_names=["rating"],
                 table_name="action_weights",
-                item_vocab_size_or_capacity=2048,
-                item_vocab_gpu_capacity_ratio=2,
+                item_vocab_size_or_capacity=11,
+                item_vocab_gpu_capacity_ratio=1,
                 sharding_type="data_parallel",
             ),            
             DynamicEmbeddingArgs(
                 feature_names=["movie_id"],
                 table_name="movie_id",
-                item_vocab_size_or_capacity=5456,
-                item_vocab_gpu_capacity_ratio=2,
-                caching=True,
+                item_vocab_size_or_capacity=HASH_SIZE,
+                item_vocab_gpu_capacity_ratio=0.5,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
-                item_vocab_size_or_capacity=27700,
-                item_vocab_gpu_capacity_ratio=2,
-                caching=True,
+                item_vocab_size_or_capacity=HASH_SIZE,
+                item_vocab_gpu_capacity_ratio=0.5,
+                caching=False,
             ),
+            
+            # 打开 caching，storage占比0.8
+            # DynamicEmbeddingArgs(
+            #     feature_names=["rating"],
+            #     table_name="action_weights",
+            #     item_vocab_size_or_capacity=2048,
+            #     item_vocab_gpu_capacity_ratio=2,
+            #     sharding_type="data_parallel",
+            # ),            
+            # DynamicEmbeddingArgs(
+            #     feature_names=["movie_id"],
+            #     table_name="movie_id",
+            #     item_vocab_size_or_capacity=5456,
+            #     item_vocab_gpu_capacity_ratio=2,
+            #     caching=True,
+            # ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["user_id"],
+            #     table_name="user_id",
+            #     item_vocab_size_or_capacity=27700,
+            #     item_vocab_gpu_capacity_ratio=2,
+            #     caching=True,
+            # ),
 
         ]
     else:

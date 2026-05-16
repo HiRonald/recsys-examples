@@ -6,11 +6,11 @@ TrainerArgs.log_interval = 100
 TrainerArgs.seed = 1234
 TrainerArgs.max_train_iters = 5000
 TrainerArgs.profile = False # 关闭原生性能分析
-TrainerArgs.pipeline_type = "prefetch" # NPU 目前不支持流水线
+TrainerArgs.pipeline_type = "none" # NPU 目前不支持流水线
 
 DatasetArgs.dataset_name = 'ml-20m'
 DatasetArgs.max_sequence_length = 200
-DatasetArgs.shuffle = True
+DatasetArgs.shuffle = False # shuffle = True 时会打乱样本索引顺序
 DatasetArgs.max_num_candidates = 20
 
 NetworkArgs.dtype_str = "bfloat16"
@@ -21,6 +21,7 @@ NetworkArgs.kv_channels = 128
 NetworkArgs.target_group_size = 1
 NetworkArgs.kernel_backend = 'npu_fused' # 算子后端类型 npu_fused 替代原生 CUTLASS/Triton
 NetworkArgs.layer_type = 'native' # HSTU 层使用 native 实现
+NetworkArgs.hidden_dropout = 0 # 隐藏层的dropout概率，0表示不使用dropout，精度对齐时设为0
 
 # ratings 0-5
 RankingArgs.prediction_head_arch = [512, 10]

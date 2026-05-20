@@ -184,7 +184,7 @@ def train_with_pipeline(
             torch_npu.profiler.ProfilerActivity.CPU,
             torch_npu.profiler.ProfilerActivity.NPU
             ],
-        schedule=torch_npu.profiler.schedule(wait=10, warmup=1, active=3, repeat=1, skip_first=1),
+        schedule=torch_npu.profiler.schedule(wait=100, warmup=1, active=3, repeat=1, skip_first=1),
         on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./result"),
         record_shapes=False,
         profile_memory=False,

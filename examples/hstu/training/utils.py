@@ -388,11 +388,17 @@ def create_dynamic_optitons_dict(
     for embedding_args in embedding_args_list:
         if isinstance(embedding_args, DynamicEmbeddingArgs):
             from dynamicemb import DynamicEmbCheckMode, DynamicEmbEvictStrategy
+            from dynamicemb import DynamicEmbInitializerArgs, DynamicEmbInitializerMode
 
             embedding_args.calculate_and_reset_global_hbm_for_values(
                 hidden_size, embedding_dim_multiplier
             )
             dynamic_options_dict[embedding_args.table_name] = DynamicEmbTableOptions(
+
+                initializer_args=DynamicEmbInitializerArgs(
+                    mode=DynamicEmbInitializerMode.UNIFORM,
+                    # value=0.0,
+                ),
                 global_hbm_for_values=embedding_args.global_hbm_for_values,
                 evict_strategy=DynamicEmbEvictStrategy.LRU
                 if embedding_args.evict_strategy == "lru"
@@ -401,8 +407,8 @@ def create_dynamic_optitons_dict(
                 bucket_capacity=128,
                 training=training,
                 # caching=embedding_args.caching,
-                caching=False,
-                # caching=True,
+                # caching=False,
+                caching=True,
             )
     return dynamic_options_dict
 
@@ -621,12 +627,12 @@ def get_dataset_and_embedding_args() -> (
     elif dataset_args.dataset_name == "ml-20m":
         return dataset_args, [
             # 关闭 caching，纯HBM
-            EmbeddingArgs(
-                feature_names=["rating"],
-                table_name="action_weights",
-                item_vocab_size_or_capacity=11,
-                sharding_type="data_parallel",
-            ),
+            # EmbeddingArgs(
+            #     feature_names=["rating"],
+            #     table_name="action_weights",
+            #     item_vocab_size_or_capacity=11,
+            #     sharding_type="data_parallel",
+            # ),
             # DynamicEmbeddingArgs(
             #     feature_names=["rating"],
             #     table_name="action_weights",
@@ -634,20 +640,20 @@ def get_dataset_and_embedding_args() -> (
             #     item_vocab_gpu_capacity_ratio=1,
             #     sharding_type="data_parallel",
             # ),
-            DynamicEmbeddingArgs(
-                feature_names=["movie_id"],
-                table_name="movie_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
-                caching=False,
-            ),
-            DynamicEmbeddingArgs(
-                feature_names=["user_id"],
-                table_name="user_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
-                caching=False,
-            ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["movie_id"],
+            #     table_name="movie_id",
+            #     item_vocab_size_or_capacity=HASH_SIZE,
+            #     item_vocab_gpu_capacity_ratio=0.5,
+            #     caching=False,
+            # ),
+            # DynamicEmbeddingArgs(
+            #     feature_names=["user_id"],
+            #     table_name="user_id",
+            #     item_vocab_size_or_capacity=HASH_SIZE,
+            #     item_vocab_gpu_capacity_ratio=0.5,
+            #     caching=False,
+            # ),
             # # 打开 caching，storage占比0.8，设置方式1（怀疑有问题）
             # DynamicEmbeddingArgs(
             #     feature_names=["rating"],
@@ -671,28 +677,28 @@ def get_dataset_and_embedding_args() -> (
             #     item_vocab_gpu_capacity_ratio=2,
             #     caching=True,
             # ),
-            # # 打开 caching，storage占比0.8，设置方式2
-            # DynamicEmbeddingArgs(
-            #     feature_names=["rating"],
-            #     table_name="action_weights",
-            #     item_vocab_size_or_capacity=2048,
-            #     item_vocab_gpu_capacity_ratio=1,
-            #     sharding_type="data_parallel",
-            # ),
-            # DynamicEmbeddingArgs(
-            #     feature_names=["movie_id"],
-            #     table_name="movie_id",
-            #     item_vocab_size_or_capacity=27280,
-            #     item_vocab_gpu_capacity_ratio=0.2,
-            #     caching=True,
-            # ),
-            # DynamicEmbeddingArgs(
-            #     feature_names=["user_id"],
-            #     table_name="user_id",
-            #     item_vocab_size_or_capacity=138500,
-            #     item_vocab_gpu_capacity_ratio=0.2,
-            #     caching=True,
-            # ),
+            # 打开 caching，storage占比0.8，设置方式2
+            DynamicEmbeddingArgs(
+                feature_names=["rating"],
+                table_name="action_weights",
+                item_vocab_size_or_capacity=2048,
+                item_vocab_gpu_capacity_ratio=1,
+                sharding_type="data_parallel",
+            ),
+            DynamicEmbeddingArgs(
+                feature_names=["movie_id"],
+                table_name="movie_id",
+                item_vocab_size_or_capacity=32768,
+                item_vocab_gpu_capacity_ratio=0.2,
+                caching=True,
+            ),
+            DynamicEmbeddingArgs(
+                feature_names=["user_id"],
+                table_name="user_id",
+                item_vocab_size_or_capacity=262144,
+                item_vocab_gpu_capacity_ratio=0.2,
+                caching=True,
+            ),
         ]
     else:
         raise ValueError(f"dataset {dataset_args.dataset_name} is not supported")

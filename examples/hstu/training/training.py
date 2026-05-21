@@ -171,7 +171,7 @@ def train_with_pipeline(
                 torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA,
                 ],
-            schedule=torch.profiler.schedule(wait=100, warmup=0, active=3,repeat=1,skip_first=1),
+            schedule=torch.profiler.schedule(wait=100, warmup=1, active=3,repeat=1,skip_first=1),
             on_trace_ready=torch.profiler.tensorboard_trace_handler("./result"),
             profile_memory=False,
             with_stack=True,

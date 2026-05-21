@@ -113,6 +113,33 @@ class CowClipDefinition:
     lower_bound: float = 0.0
 
 
+
+def _get_world_size() -> int:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_world_size()
+    return 1
+
+
+def _get_rank() -> int:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank()
+    return 0
+    
+
+# OPTIMIZER_STATE_ALIGNMENT_BYTES = 16
+BYTES_PER_KB = 1024
+BYTES_PER_MB = 1024 * 1024
+
+def _format_bytes(num_bytes: Optional[int]) -> str:
+    if num_bytes is None:
+        return "None"
+    if num_bytes >= BYTES_PER_MB:
+        return f"{num_bytes / BYTES_PER_MB:.2f}MB({num_bytes}B)"
+    if num_bytes >= BYTES_PER_KB:
+        return f"{num_bytes / BYTES_PER_KB:.2f}KB({num_bytes}B)"
+    return f"{num_bytes}B"
+
+
 def encode_meta_json_file_path(root_path: str, table_name: str) -> str:
     return os.path.join(root_path, f"{table_name}_opt_args.json")
 
@@ -618,7 +645,17 @@ class BatchedDynamicEmbeddingTablesV2(nn.Module):
         self._caches: List[Cache] = []
         self._caching = self._dynamicemb_options[0].caching
 
-        for option in self._dynamicemb_options:
+        rank = _get_rank()
+        world_size = _get_world_size()
+
+        for table_idx, option in enumerate(self._dynamicemb_options):
+            table_name = (
+                self._table_names[table_idx]
+                if self._table_names is not None and table_idx < len(self._table_names)
+                else f"table_{table_idx}"
+            )
+
+        # for option in self._dynamicemb_options:
             if option.training and option.optimizer_type == OptimizerType.Null:
                 option.optimizer_type = convert_optimizer_type(self._optimizer_type)
             elif not option.training and option.optimizer_type != OptimizerType.Null:
@@ -626,6 +663,28 @@ class BatchedDynamicEmbeddingTablesV2(nn.Module):
                 warnings.warn(
                     "Set OptimizerType to Null as not on training mode.", UserWarning
                 )
+
+            logging.info(
+                "[DynamicEmb init][rank=%s/%s][table=%s] option: training=%s caching=%s "
+                "prefetch=%s dim=%s embedding_dtype=%s "
+                "optimizer_type=%s max_capacity=%s init_capacity=%s local_hbm_for_values=%s "
+                "global_hbm_for_values=%s "
+                "bucket_capacity=%s",
+                rank,
+                world_size,
+                table_name,
+                option.training,
+                option.caching,
+                self._enable_prefetch,
+                option.dim,
+                option.embedding_dtype,
+                option.optimizer_type,
+                option.max_capacity,
+                option.init_capacity,
+                _format_bytes(option.local_hbm_for_values),
+                _format_bytes(option.global_hbm_for_values),
+                option.bucket_capacity,
+            )
 
             if option.caching and option.training:
                 cache_option = deepcopy(option)
@@ -644,10 +703,43 @@ class BatchedDynamicEmbeddingTablesV2(nn.Module):
 
                 cache_option.max_capacity = capacity
                 cache_option.init_capacity = capacity
+
+                logging.info(
+                    "[DynamicEmb init][rank=%s/%s][table=%s][cache] local_hbm_for_values=%s "
+                    "device_id=%s bucket_capacity=%s "
+                    "max_capacity=%s init_capacity=%s local_hbm_for_values=%s",
+                    rank,
+                    world_size,
+                    table_name,
+                    _format_bytes(cache_option.local_hbm_for_values),
+                    cache_option.device_id,
+                    cache_option.bucket_capacity,
+                    cache_option.max_capacity,
+                    cache_option.init_capacity,
+                    _format_bytes(cache_option.local_hbm_for_values),
+                )
+
                 self._caches.append(KeyValueTable(cache_option, self._optimizer))
 
                 storage_option = deepcopy(option)
                 storage_option.local_hbm_for_values = 0
+
+                logging.info(
+                    "[DynamicEmb init][rank=%s/%s][table=%s][storage] "
+                    "device_id=%s "
+                    "bucket_capacity=%s "
+                    "max_capacity=%s init_capacity=%s local_hbm_for_values=%s",
+                    rank,
+                    world_size,
+                    table_name,
+                    storage_option.device_id,
+                    storage_option.bucket_capacity,
+                    storage_option.max_capacity,
+                    storage_option.init_capacity,
+                    _format_bytes(storage_option.local_hbm_for_values),
+                )
+
+
                 PS = storage_option.external_storage
                 self._storages.append(
                     PS(storage_option, self._optimizer)
@@ -656,6 +748,20 @@ class BatchedDynamicEmbeddingTablesV2(nn.Module):
                 )
             else:
                 self._caches.append(None)
+
+                logging.info(
+                    "[DynamicEmb init][rank=%s/%s][table=%s][storage] "
+                    "device_id=%s max_capacity=%s init_capacity=%s local_hbm_for_values=%s",
+                    rank,
+                    world_size,
+                    table_name,
+                    option.device_id,
+                    option.max_capacity,
+                    option.init_capacity,
+                    _format_bytes(option.local_hbm_for_values),
+                )
+
+
                 self._storages.append(KeyValueTable(option, self._optimizer))
 
         _print_memory_consume(

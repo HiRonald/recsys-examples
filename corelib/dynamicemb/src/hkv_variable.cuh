@@ -371,6 +371,23 @@ HKVVariable<KeyType, ValueType, Strategy>::HKVVariable(
   hkv_table_option_.num_of_buckets_per_alloc = num_of_buckets_per_alloc;
   hkv_table_option_.api_lock = false;
 
+
+  std::cout << "[hkv_variable.cpp] hkv_table_option_.max_hbm_for_vectors: " << hkv_table_option_.max_hbm_for_vectors;
+  std::cout << ",  hkv_table_option_.max_capacity: " << hkv_table_option_.max_capacity;
+  std::cout << ",  hkv_table_option_.init_capacity: " << hkv_table_option_.init_capacity;
+  std::cout << ",  hkv_table_option_.max_bucket_size: " << hkv_table_option_.max_bucket_size;
+  std::cout << ",  hkv_table_option_.max_load_factor: " << hkv_table_option_.max_load_factor;
+  std::cout << ",  hkv_table_option_.block_size: " << hkv_table_option_.block_size;
+  std::cout << ",  hkv_table_option_.io_block_size: " << hkv_table_option_.io_block_size;
+  std::cout << ",  hkv_table_option_.device_id: " << hkv_table_option_.device_id;
+  std::cout << ",  hkv_table_option_.io_by_cpu: " << hkv_table_option_.io_by_cpu;
+  std::cout << ",  hkv_table_option_.use_constant_memory: " << hkv_table_option_.use_constant_memory;
+  std::cout << ",  hkv_table_option_.reserved_key_start_bit: " << hkv_table_option_.reserved_key_start_bit;
+  std::cout << ",  hkv_table_option_.num_of_buckets_per_alloc: " << hkv_table_option_.num_of_buckets_per_alloc;
+  std::cout << ",  hkv_table_option_.api_lock: " << hkv_table_option_.api_lock;
+  std::cout << std::endl;
+
+  
   /// TODO: make HKV's init async.
   hkv_table_->init(hkv_table_option_);
   // HKV itself has cuda check, however, it invokes exit() rather than throw

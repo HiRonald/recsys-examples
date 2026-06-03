@@ -393,7 +393,7 @@ def create_dynamic_optitons_dict(
                     # mode=DynamicEmbInitializerMode.UNIFORM,
                     # 精度对齐时设为CONSTANT，value=0.0
                     mode=DynamicEmbInitializerMode.CONSTANT,
-                    value=0.0,
+                    value=0.1,
                 ),
                 global_hbm_for_values=embedding_args.global_hbm_for_values,
                 evict_strategy=DynamicEmbEvictStrategy.LRU
@@ -633,22 +633,22 @@ def get_dataset_and_embedding_args() -> (
             DynamicEmbeddingArgs(
                 feature_names=["rating"],
                 table_name="action_weights",
-                item_vocab_size_or_capacity=11,
+                item_vocab_size_or_capacity=2048,
                 item_vocab_gpu_capacity_ratio=1,
                 sharding_type="data_parallel",
             ),            
             DynamicEmbeddingArgs(
                 feature_names=["movie_id"],
                 table_name="movie_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
+                item_vocab_size_or_capacity=32768,
+                item_vocab_gpu_capacity_ratio=1,
                 caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
-                item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
+                item_vocab_size_or_capacity=262144,
+                item_vocab_gpu_capacity_ratio=1,
                 caching=False,
             ),
             
@@ -657,21 +657,21 @@ def get_dataset_and_embedding_args() -> (
             #     feature_names=["rating"],
             #     table_name="action_weights",
             #     item_vocab_size_or_capacity=2048,
-            #     item_vocab_gpu_capacity_ratio=2,
+            #     item_vocab_gpu_capacity_ratio=1,
             #     sharding_type="data_parallel",
             # ),            
             # DynamicEmbeddingArgs(
             #     feature_names=["movie_id"],
             #     table_name="movie_id",
-            #     item_vocab_size_or_capacity=5456,
-            #     item_vocab_gpu_capacity_ratio=2,
+            #     item_vocab_size_or_capacity=32768,
+            #     item_vocab_gpu_capacity_ratio=0.2,
             #     caching=True,
             # ),
             # DynamicEmbeddingArgs(
             #     feature_names=["user_id"],
             #     table_name="user_id",
-            #     item_vocab_size_or_capacity=27700,
-            #     item_vocab_gpu_capacity_ratio=2,
+            #     item_vocab_size_or_capacity=262144,
+            #     item_vocab_gpu_capacity_ratio=0.2,
             #     caching=True,
             # ),
 

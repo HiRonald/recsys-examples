@@ -56,7 +56,7 @@ echo "CPU_AFFINITY_CONF="$CPU_AFFINITY_CONF
 #---------------------------------------------
 # prof related
 #---------------------------------------------
-export NPU_PROFILE=1
+export NPU_PROFILE=0
 
 #---------------------------------------------
 # train job related
@@ -65,8 +65,8 @@ py_file=pretrain_gr_ranking.py
 config_file=movielen_ranking.gin
 
 # 根据实际情况修改
-export WORLD_SIZE=1
-export ASCEND_RT_VISIBLE_DEVICES=0
+export WORLD_SIZE=2
+export ASCEND_RT_VISIBLE_DEVICES=0,1
 
 
 torchrun \

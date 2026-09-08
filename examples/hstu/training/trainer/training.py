@@ -307,8 +307,13 @@ def train_with_pipeline(
         NDCG_20 = NDCG_20.item()
     if hasattr(HR, 'item'):
         HR = HR.item()
+    try:
+        from utils import DatasetArgs
+        dataset_name = DatasetArgs().dataset_name
+    except Exception:
+        dataset_name = "unknown"
     final_results = {
-        'dataset_name': "ml-20m",
+        'dataset_name': dataset_name,
         'batch_size': trainer_args.train_batch_size,
         'epoch': epoch,
         'step': train_iter,

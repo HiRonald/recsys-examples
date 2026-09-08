@@ -32,6 +32,8 @@ def pytorch_norm_mul_dropout(
     """
     All op is performed in fp32.
     """
+    if x.numel() == 0:
+        return x
     dtype = x.dtype
     x = x.to(torch.float32)
     u = u.reshape(u.size(0), -1).to(torch.float32)

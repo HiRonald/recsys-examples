@@ -28,7 +28,7 @@ from configs import (
     PositionEncodingConfig,
     get_hstu_config,
 )
-from dynamicemb import DynamicEmbTableOptions
+from dynamic_emb import DynamicEmbTableOptions
 from utils import (
     BenchmarkDatasetArgs,
     DatasetArgs,
@@ -171,15 +171,19 @@ def create_hstu_config(
         kernel_backend = KernelBackend.TRITON
     elif network_args.kernel_backend == "pytorch":
         kernel_backend = KernelBackend.PYTORCH
+    elif network_args.kernel_backend == "npu_fused":
+        kernel_backend = KernelBackend.NPU_FUSED
     else:
         raise ValueError(
             f"Kernel backend {network_args.kernel_backend} is not supported."
         )
     layer_type = None
-    if tensor_model_parallel_args.tensor_model_parallel_size == 1:
+    if network_args.layer_type == "fused":
         layer_type = HSTULayerType.FUSED
-    else:
+    elif network_args.layer_type == "native":
         layer_type = HSTULayerType.NATIVE
+    else:
+        raise ValueError(f"Layer type {network_args.layer_type} is not supported.")
 
     position_encoding_config = PositionEncodingConfig(
         num_position_buckets=network_args.num_position_buckets,
@@ -375,12 +379,15 @@ def create_dynamic_optitons_dict(
     dynamic_options_dict: Dict[str, DynamicEmbTableOptions] = {}
     for embedding_args in embedding_args_list:
         if isinstance(embedding_args, DynamicEmbeddingArgs):
-            from dynamicemb import DynamicEmbCheckMode, DynamicEmbEvictStrategy
-
+            from dynamic_emb.distributed.dynamicemb_config import DynamicEmbEvictStrategy
+            from dynamic_emb import DynamicEmbCheckMode, DynamicEmbInitializerArgs, DynamicEmbInitializerMode
             embedding_args.calculate_and_reset_global_hbm_for_values(
                 hidden_size, embedding_dim_multiplier
             )
             dynamic_options_dict[embedding_args.table_name] = DynamicEmbTableOptions(
+                initializer_args=DynamicEmbInitializerArgs(
+                    mode=DynamicEmbInitializerMode.UNIFORM
+                ),
                 global_hbm_for_values=embedding_args.global_hbm_for_values,
                 evict_strategy=DynamicEmbEvictStrategy.LRU
                 if embedding_args.evict_strategy == "lru"
@@ -395,6 +402,7 @@ def create_dynamic_optitons_dict(
 
 def get_dataset_and_embedding_args(
     caching: bool = False,
+    network_args: NetworkArgs = None
 ) -> Tuple[
     Union[DatasetArgs, BenchmarkDatasetArgs],
     List[Union[DynamicEmbeddingArgs, EmbeddingArgs]],
@@ -405,164 +413,183 @@ def get_dataset_and_embedding_args(
         benchmark_dataset_args = BenchmarkDatasetArgs()  # type: ignore[call-arg]
         return benchmark_dataset_args, benchmark_dataset_args.embedding_args
     assert isinstance(dataset_args, DatasetArgs)
-    HASH_SIZE = 10_000_000
+    HASH_SIZE = network_args.hash_size if network_args else 10_000_000
     if dataset_args.dataset_name == "kuairand-pure":
         return dataset_args, [
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["user_active_degree"],
                 table_name="user_active_degree",
                 item_vocab_size_or_capacity=10,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["follow_user_num_range"],
                 table_name="follow_user_num_range",
                 item_vocab_size_or_capacity=9,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["fans_user_num_range"],
                 table_name="fans_user_num_range",
                 item_vocab_size_or_capacity=10,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["friend_user_num_range"],
                 table_name="friend_user_num_range",
                 item_vocab_size_or_capacity=8,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["register_days_range"],
                 table_name="register_days_range",
                 item_vocab_size_or_capacity=8,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["action_weights"],
                 table_name="action_weights",
                 item_vocab_size_or_capacity=226,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["video_id"],
                 table_name="video_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=caching,
+                caching=True,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=caching,
+                caching=True,
             ),
         ]
     elif dataset_args.dataset_name == "kuairand-1k":
         return dataset_args, [
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["user_active_degree"],
                 table_name="user_active_degree",
                 item_vocab_size_or_capacity=8,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["follow_user_num_range"],
                 table_name="follow_user_num_range",
                 item_vocab_size_or_capacity=9,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["fans_user_num_range"],
                 table_name="fans_user_num_range",
                 item_vocab_size_or_capacity=9,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["friend_user_num_range"],
                 table_name="friend_user_num_range",
                 item_vocab_size_or_capacity=8,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["register_days_range"],
                 table_name="register_days_range",
                 item_vocab_size_or_capacity=8,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["action_weights"],
                 table_name="action_weights",
                 item_vocab_size_or_capacity=233,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["video_id"],
                 table_name="video_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=caching,
+                caching=True,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=caching,
+                caching=True,
             ),
         ]
     elif dataset_args.dataset_name == "kuairand-27k":
         return dataset_args, [
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["user_active_degree"],
                 table_name="user_active_degree",
                 item_vocab_size_or_capacity=10,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["follow_user_num_range"],
                 table_name="follow_user_num_range",
                 item_vocab_size_or_capacity=9,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["fans_user_num_range"],
                 table_name="fans_user_num_range",
                 item_vocab_size_or_capacity=10,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["friend_user_num_range"],
                 table_name="friend_user_num_range",
                 item_vocab_size_or_capacity=8,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["register_days_range"],
                 table_name="register_days_range",
                 item_vocab_size_or_capacity=8,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["action_weights"],
                 table_name="action_weights",
                 item_vocab_size_or_capacity=246,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["video_id"],
                 table_name="video_id",
                 item_vocab_size_or_capacity=32038725,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=caching,
+                # Host HKV + HIXL require caching=True even when pipeline_type=none.
+                caching=True,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
                 item_vocab_gpu_capacity_ratio=0.5,
-                caching=caching,
+                caching=True,
             ),
         ]
     elif dataset_args.dataset_name == "ml-1m":
@@ -614,25 +641,26 @@ def get_dataset_and_embedding_args(
         ]
     elif dataset_args.dataset_name == "ml-20m":
         return dataset_args, [
-            EmbeddingArgs(
+            DynamicEmbeddingArgs(
                 feature_names=["rating"],
                 table_name="action_weights",
                 item_vocab_size_or_capacity=11,
-                sharding_type="data_parallel",
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["movie_id"],
                 table_name="movie_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
-                caching=caching,
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
             DynamicEmbeddingArgs(
                 feature_names=["user_id"],
                 table_name="user_id",
                 item_vocab_size_or_capacity=HASH_SIZE,
-                item_vocab_gpu_capacity_ratio=0.5,
-                caching=True,
+                item_vocab_gpu_capacity_ratio=1,
+                caching=False,
             ),
         ]
     else:

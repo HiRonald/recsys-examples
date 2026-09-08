@@ -52,7 +52,7 @@ class HSTUBlock(MegatronModule):
             [HSTULayerImpl(config) for l in range(self.config.num_layers)]
         )
 
-    @output_nvtx_hook(nvtx_tag="HSTUBlock", hook_key_or_attr_name="values")
+    # @output_nvtx_hook(nvtx_tag="HSTUBlock", hook_key_or_attr_name="values")
     def forward(
         self,
         embeddings: Dict[str, JaggedTensor],

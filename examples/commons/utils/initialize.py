@@ -16,6 +16,7 @@ import gc
 import os
 
 import torch
+import torch_npu
 
 try:
     from megatron.core import parallel_state, tensor_parallel
@@ -33,9 +34,9 @@ def initialize_single_rank():
         return
     torch.set_printoptions(precision=6, sci_mode=False)
     rank = 0
-    device: torch.device = torch.device(f"cuda:{rank}")
-    backend = "nccl"
-    torch.cuda.set_device(device)
+    device: torch.device = torch.device(f"npu:{rank}")
+    backend = "hccl"
+    torch_npu.npu.set_device(device)
     torch.distributed.init_process_group(
         backend=backend, init_method="tcp://127.0.0.1:12345", rank=rank, world_size=1
     )
@@ -44,26 +45,25 @@ def initialize_single_rank():
 def initialize_distributed():
     if torch.distributed.is_initialized():
         return
-    torch.set_printoptions(precision=8, sci_mode=False)
+    torch.set_printoptions(precision=6, sci_mode=False)
     rank = int(os.environ["LOCAL_RANK"])
-    device: torch.device = torch.device(f"cuda:{rank}")
-    backend = "nccl"
-    torch.cuda.set_device(device)
+    device: torch.device = torch.device(f"npu:{rank}")
+    backend = "hccl"
+    torch_npu.npu.set_device(device)
     torch.distributed.init_process_group(backend=backend)
 
 
 def initialize_model_parallel(tensor_model_parallel_size=1):
     if parallel_state.model_parallel_is_initialized():
         return
-    torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
     parallel_state.initialize_model_parallel(
         tensor_model_parallel_size,
     )
-    torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+    torch.distributed.barrier(device_ids=[torch_npu.npu.current_device()])
 
 
 def destroy_global_state():
-    torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+    torch.distributed.barrier(device_ids=[torch_npu.npu.current_device()])
 
     # TODO, find the reason why destroying pg hit nccl error when tpsize > 1
     if parallel_state.model_parallel_is_initialized():
@@ -75,7 +75,7 @@ def destroy_global_state():
                 group=parallel_state.get_data_parallel_group(with_context_parallel=True)
             )
         parallel_state.destroy_model_parallel()
-    torch.cuda.empty_cache()
+    torch_npu.npu.empty_cache()
     gc.collect()
 
 
@@ -106,8 +106,10 @@ def set_random_seed(seed_):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        if torch.cuda.device_count() > 0:
+        if torch_npu.npu.device_count() > 0:
             tensor_parallel.model_parallel_cuda_manual_seed(seed)
+            torch_npu.npu.manual_seed(seed)
+            torch_npu.npu.manual_seed_all(seed)
 
             # We must maintain an rng state for torchrec, because with different world size, the state evolution differ
             # guarantee randomness across DPxTPxCPxPP for embedding-group

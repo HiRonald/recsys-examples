@@ -16,17 +16,23 @@ import itertools
 from typing import Dict, Optional, Union
 
 import torch
+import torch_npu
 from commons.datasets.hstu_batch import HSTUBatch
-from commons.ops.cuda_ops.JaggedTensorOpFunction import jagged_2D_tensor_concat
+# from commons.ops.cuda_ops.JaggedTensorOpFunction import jagged_2D_tensor_concat
 from commons.ops.length_to_offsets import length_to_complete_offsets
-from commons.ops.triton_ops.triton_jagged import triton_split_2D_jagged
-from commons.utils.nvtx_op import output_nvtx_hook
+# from commons.ops.triton_ops.triton_jagged import triton_split_2D_jagged
+# from commons.utils.nvtx_op import output_nvtx_hook
 from configs.hstu_config import HSTUConfig
 from configs.inference_config import InferenceHSTUConfig
 from modules.jagged_data import JaggedData, pad_jd_values, unpad_jd_values
 from modules.mlp import MLP
 from modules.position_encoder import HSTUPositionalEncoder
 from torchrec.sparse.jagged_tensor import JaggedTensor
+from ops.jagged_tensor_op import concat_2D_jagged_tensors
+from ops.pt_ops.pt_jagged_tensors import (
+    pytorch_concat_2D_jagged,
+    pytorch_split_2D_jagged,
+)
 
 try:
     from megatron.core import parallel_state
@@ -151,43 +157,51 @@ def hstu_preprocess_embeddings(
         contextual_max_seqlens = [
             batch.feature_to_max_seqlen[name] for name in batch.contextual_feature_names
         ]
-        contextual_jts = [embeddings[name] for name in batch.contextual_feature_names]
-        contextual_jts_values = [jt.values().to(dtype) for jt in contextual_jts]
-        contextual_jts_offsets = [jt.offsets() for jt in contextual_jts]
+        # contextual_jts = [embeddings[name] for name in batch.contextual_feature_names]
+        # contextual_jts_values = [jt.values().to(dtype) for jt in contextual_jts]
+        # contextual_jts_offsets = [jt.offsets() for jt in contextual_jts]
 
-        (contextual_sequence_embeddings, contextual_seqlen) = jagged_2D_tensor_concat(
-            contextual_jts_values,
-            contextual_jts_offsets,
-            contextual_max_seqlens,
+        # (contextual_sequence_embeddings, contextual_seqlen) = jagged_2D_tensor_concat(
+        #     contextual_jts_values,
+        #     contextual_jts_offsets,
+        #     contextual_max_seqlens,
+        # )
+        contextual_embeddings, contextual_seqlen = concat_2D_jagged_tensors(
+            jagged_tensors=[embeddings[name] for name in batch.contextual_feature_names],
+            max_seqlens=contextual_max_seqlens,
         )
-        if torch.sum(contextual_seqlen, dim=0).cpu().item() == 0:
-            contextual_seqlen = None
-        else:
-            if contextual_mlp is not None:
-                contextual_sequence_embeddings = contextual_mlp(
-                    contextual_sequence_embeddings
-                )
-            contextual_seqlen_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
-                contextual_seqlen
+        if contextual_mlp is not None:
+            contextual_sequence_embeddings = contextual_mlp(
+                contextual_sequence_embeddings
             )
-            contextual_max_seqlen = max(
-                len(batch.contextual_feature_names), sum(contextual_max_seqlens)
-            )
-            (
-                sequence_embeddings,
-                sequence_embeddings_lengths,
-            ) = jagged_2D_tensor_concat(
-                [contextual_sequence_embeddings, sequence_embeddings],
-                [contextual_seqlen_offsets, sequence_embeddings_lengths_offsets],
-                [contextual_max_seqlen, sequence_max_seqlen],
-            )
+        contextual_seqlen_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            contextual_seqlen
+        )
+        contextual_max_seqlen = max(
+            len(batch.contextual_feature_names), sum(contextual_max_seqlens)
+        )
+        # (
+        #     sequence_embeddings,
+        #     sequence_embeddings_lengths,
+        # ) = jagged_2D_tensor_concat(
+        #     [contextual_sequence_embeddings, sequence_embeddings],
+        #     [contextual_seqlen_offsets, sequence_embeddings_lengths_offsets],
+        #     [contextual_max_seqlen, sequence_max_seqlen],
+        # )
+        sequence_embeddings = pytorch_concat_2D_jagged(
+            values_left = contextual_embeddings,
+            values_right = sequence_embeddings,
+            max_len_left = None,
+            max_len_right = None,
+            offsets_left = contextual_seqlen_offsets,
+            offsets_right = sequence_embeddings_lengths_offsets
+        )
+        sequence_embeddings_lengths = (contextual_seqlen + sequence_embeddings_lengths)
 
-            sequence_embeddings_lengths_offsets = (
-                torch.ops.fbgemm.asynchronous_complete_cumsum(
-                    sequence_embeddings_lengths
-                )
-            )
-            sequence_max_seqlen = sequence_max_seqlen + contextual_max_seqlen
+        sequence_embeddings_lengths_offsets = (
+            torch.ops.fbgemm.asynchronous_complete_cumsum(sequence_embeddings_lengths)
+        )
+        sequence_max_seqlen = sequence_max_seqlen + contextual_max_seqlen
 
     return JaggedData(
         values=sequence_embeddings,
@@ -285,7 +299,7 @@ class HSTUBlockPreprocessor(torch.nn.Module):
             self._dropout_ratio = config.hidden_dropout
         self._scaling_seqlen = config.scaling_seqlen
 
-    @output_nvtx_hook(nvtx_tag="HSTUBlock preprocess", hook_key_or_attr_name="values")
+    # @output_nvtx_hook(nvtx_tag="HSTUBlock preprocess", hook_key_or_attr_name="values")
     def forward(
         self,
         embeddings: Dict[str, JaggedTensor],
@@ -308,7 +322,7 @@ class HSTUBlockPreprocessor(torch.nn.Module):
         Returns:
             JaggedData: The preprocessed jagged data, ready for further processing in the HSTU architecture.
         """
-        device = torch.device("cuda", torch.cuda.current_device())
+        device = torch.device("npu", torch_npu.npu.current_device())
         batch = batch.to(device)
         # Interleaving & concatenation
         jd = hstu_preprocess_embeddings(
@@ -362,7 +376,7 @@ class HSTUBlockPostprocessor(torch.nn.Module):
         if self._is_inference:
             self._sequence_parallel = False
 
-    @output_nvtx_hook(nvtx_tag="HSTUBlock postprocess", hook_key_or_attr_name="values")
+    # @output_nvtx_hook(nvtx_tag="HSTUBlock postprocess", hook_key_or_attr_name="values")
     def forward(self, jd: JaggedData) -> JaggedData:
         """
         Postprocess the output from the HSTU architecture.
@@ -389,20 +403,36 @@ class HSTUBlockPostprocessor(torch.nn.Module):
         if jd.max_num_candidates > 0:
             seqlen_offsets = jd.num_candidates_offsets
             max_seqlen = jd.max_num_candidates
-            _, sequence_embeddings = triton_split_2D_jagged(
-                jd.values,
+            # _, sequence_embeddings = triton_split_2D_jagged(
+            #     jd.values,
+            #     jd.max_seqlen,
+            #     offsets_a=jd.seqlen_offsets - jd.num_candidates_offsets,
+            #     offsets_b=seqlen_offsets,
+            # )
+            _, sequence_embeddings = pytorch_split_2D_jagged(
                 jd.max_seqlen,
-                offsets_a=jd.seqlen_offsets - jd.num_candidates_offsets,
-                offsets_b=seqlen_offsets,
+                jd.values,
+                max_len_left=None,
+                max_len_right=None,
+                offsets_left=jd.seqlen_offsets - jd.num_candidates_offsets,
+                offsets_right=seqlen_offsets,
             )
         elif jd.contextual_max_seqlen > 0:
             seqlen_offsets = jd.seqlen_offsets - jd.contextual_seqlen_offsets
             max_seqlen = jd.max_seqlen - jd.contextual_max_seqlen
-            _, sequence_embeddings = triton_split_2D_jagged(
-                jd.values,
+            # _, sequence_embeddings = triton_split_2D_jagged(
+            #     jd.values,
+            #     jd.max_seqlen,
+            #     offsets_a=jd.contextual_seqlen_offsets,
+            #     offsets_b=seqlen_offsets,
+            # )
+            _, sequence_embeddings = pytorch_split_2D_jagged(
                 jd.max_seqlen,
-                offsets_a=jd.contextual_seqlen_offsets,
-                offsets_b=seqlen_offsets,
+                jd.values,
+                max_len_left=None,
+                max_len_right=None,
+                offsets_left=jd.contextual_seqlen_offsets,
+                offsets_right=seqlen_offsets,
             )
         else:
             sequence_embeddings = jd.values

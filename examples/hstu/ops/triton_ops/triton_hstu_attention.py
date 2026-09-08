@@ -2308,64 +2308,6 @@ def _get_bw_configs() -> List[triton.Config]:
             pre_hook=_bwd_pre_hook,
         ),
     ]
-    if torch.cuda.is_available() and torch.version.cuda < "12.8":
-        configs += [
-            triton.Config(
-                {"BLOCK_M": 16, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False, "UNROLL": 1},
-                num_stages=1,
-                num_warps=4,
-                pre_hook=_bwd_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 32, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False, "UNROLL": 1},
-                num_stages=1,
-                num_warps=4,
-                pre_hook=_bwd_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 32, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False, "UNROLL": 1},
-                num_stages=1,
-                num_warps=8,
-                pre_hook=_bwd_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 32, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True, "UNROLL": 1},
-                num_stages=1,
-                num_warps=8,
-                pre_hook=_bwd_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 32, "BLOCK_N": 128, "SEQUENCE_PARALLEL": True, "UNROLL": 1},
-                num_stages=3,
-                num_warps=8,
-                pre_hook=_bwd_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 32, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True, "UNROLL": 1},
-                num_stages=1,
-                num_warps=4,
-                pre_hook=_bwd_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 32, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True, "UNROLL": 1},
-                num_stages=2,
-                num_warps=4,
-                pre_hook=_bwd_pre_hook,
-            ),
-            triton.Config(
-                {
-                    "BLOCK_M": 32,
-                    "BLOCK_N": 128,
-                    "SEQUENCE_PARALLEL": False,
-                    "UNROLL": 2,
-                },
-                num_stages=2,
-                num_warps=8,
-                pre_hook=_bwd_pre_hook,
-            ),
-        ]
-    else:
-        print("WARNING: temporarily disabled some autotune configs for CUDA 12.8+")
     return configs
 
 

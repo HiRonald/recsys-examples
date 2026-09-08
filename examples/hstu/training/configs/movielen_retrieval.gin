@@ -4,10 +4,14 @@ TrainerArgs.eval_interval = 100
 TrainerArgs.log_interval = 100
 TrainerArgs.ckpt_save_interval = -1
 TrainerArgs.seed = 1234
+TrainerArgs.max_train_iters = 5000
+TrainerArgs.pipeline_type = "none"
+TrainerArgs.enable_balanced_shuffler = False  # Set to True to enable balanced batch shuffling
+TrainerArgs.enable_determinism = False
 
 DatasetArgs.dataset_name = 'ml-20m'
 DatasetArgs.max_history_seqlen = 200
-DatasetArgs.shuffle = True
+DatasetArgs.shuffle = False
 
 NetworkArgs.dtype_str = "bfloat16"
 NetworkArgs.num_layers = 4
@@ -17,6 +21,9 @@ NetworkArgs.kv_channels = 64
 NetworkArgs.hidden_dropout = 0
 NetworkArgs.norm_epsilon = 1e-6
 NetworkArgs.is_causal = True
+NetworkArgs.layer_type = 'native'
+NetworkArgs.kernel_backend = 'npu_fused'
+NetworkArgs.hash_size = 1000000
 
 OptimizerArgs.optimizer_str = 'adam'
 OptimizerArgs.learning_rate = 1e-3

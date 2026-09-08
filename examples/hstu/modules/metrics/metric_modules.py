@@ -25,7 +25,7 @@ import torch
 import torchmetrics.classification as classification_metrics
 from commons.ops.collective_ops import grouped_allgatherv_tensor_list
 from commons.utils.nvtx_op import output_nvtx_hook
-from dynamicemb.planner import (
+from dynamic_emb import (
     DynamicEmbeddingShardingPlanner as DynamicEmbeddingShardingPlanner,
 )
 
@@ -196,7 +196,6 @@ class MultiClassificationTaskMetric(BaseTaskMetric):
         self.training = False
 
     # return a
-    @output_nvtx_hook("ranking metrics", backward=False)
     def forward(self, multi_task_logits, targets):
         """
         Forward one eval batch, this forward returns None object.
@@ -277,7 +276,6 @@ class RetrievalTaskMetricWithSampling(BaseTaskMetric):
         self._cache_target_ids: List[torch.Tensor] = []
         self._chunk_size = 512
 
-    @output_nvtx_hook("retrieval metrics", backward=False)
     def forward(
         self,
         query_embeddings: torch.Tensor,  # preds, dense embedding tensor
@@ -344,16 +342,17 @@ class RetrievalTaskMetricWithSampling(BaseTaskMetric):
                     )  # (Q, T)
                 else:
                     local_topk_logits = torch.cat([local_topk_logits, logits], dim=1)
+                    local_topk_logits = local_topk_logits.to(torch.float32)
                     chunk_keys = chunk_keys.unsqueeze(0).expand(
                         local_topk_keys.size(0), -1
                     )
-                    local_topk_keys = torch.cat([local_topk_keys, chunk_keys], dim=1)
+                    local_topk_keys = torch.cat([local_topk_keys.to(torch.int32), chunk_keys.to(torch.int32)], dim=1)
                 k = min(self._max_k, logits.size(1))
                 local_topk_logits, local_topk_indices = torch.topk(
                     local_topk_logits,
                     k=k,
                     dim=1,
-                    sorted=False,
+                    sorted=True, # 排序结果，确保精度对齐
                     largest=True,
                 )
                 local_topk_keys = torch.gather(

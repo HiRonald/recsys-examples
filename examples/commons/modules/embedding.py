@@ -21,10 +21,10 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch_npu
 import torch.fx
 import torch.nn as nn
-from commons.utils.nvtx_op import output_nvtx_hook, register_setter_and_getter_for_nvtx
-from dynamicemb.planner import (
+from dynamic_emb import (
     DynamicEmbeddingShardingPlanner as DynamicEmbeddingShardingPlanner,
 )
 from torchrec.distributed.embedding_sharding import EmbeddingShardingInfo
@@ -330,7 +330,7 @@ class ShardedEmbedding(torch.nn.Module):
                     )
                     for config in configs
                 ],
-                device=torch.device("meta"),
+                device=torch.device("npu"),
             )
 
         model_parallel_embedding_configs = []
@@ -353,16 +353,11 @@ class ShardedEmbedding(torch.nn.Module):
                 if len(data_parallel_embedding_configs) > 0
                 else None
             )
-            self._side_stream = torch.cuda.Stream()
+            self._side_stream = torch_npu.npu.Stream()
         else:
             self._data_parallel_embedding_collection = None
             self._side_stream = None
         self.freeze_embedding = os.environ.get("FREEZE_EMBEDDING", "0")
-        # for nvtx setting, we need to get the tensor from the output dict and set it back to the output dict
-        register_setter_and_getter_for_nvtx(
-            ShardedEmbedding.forward,
-            key_or_attr_name=[embedding_configs[0].feature_names[0], "_values"],
-        )
 
     def _maybe_detach(self, embeddings):
         """
@@ -377,7 +372,6 @@ class ShardedEmbedding(torch.nn.Module):
                 embedding._values = embedding._values.detach()
         return embeddings
 
-    @output_nvtx_hook(nvtx_tag="ShardedEmbedding")
     def forward(self, kjt: KeyedJaggedTensor) -> Dict[str, JaggedTensor]:
         """
         Forward pass of the sharded embedding module.
@@ -398,9 +392,9 @@ class ShardedEmbedding(torch.nn.Module):
             mp_embeddings_awaitables = self._model_parallel_embedding_collection(kjt)
             embeddings = {**embeddings, **(mp_embeddings_awaitables.wait())}
         if self._data_parallel_embedding_collection is not None:
-            with torch.cuda.stream(self._side_stream):
+            with torch_npu.npu.stream(self._side_stream):
                 dp_embeddings = self._data_parallel_embedding_collection(kjt)
-            torch.cuda.current_stream().wait_stream(self._side_stream)
+            torch_npu.npu.current_stream().wait_stream(self._side_stream)
             embeddings = {**embeddings, **dp_embeddings}
         return embeddings
 
@@ -439,7 +433,7 @@ class ShardedEmbedding(torch.nn.Module):
             rank 0: keys: (50,), values: (50, 32)
             rank 1: keys: (50,), values: (50, 32)
         """
-        from dynamicemb.dump_load import get_dynamic_emb_module
+        from dynamic_emb.distributed.dump_load import get_dynamic_emb_module
 
         dynamicemb_modules = get_dynamic_emb_module(
             self._model_parallel_embedding_collection

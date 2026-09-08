@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import torch
-from commons.utils.nvtx_op import output_nvtx_hook
+# from commons.utils.nvtx_op import output_nvtx_hook
 
 
 def _decode_bits(encoded_labels: torch.Tensor, bit_width: int) -> torch.Tensor:
@@ -31,10 +31,15 @@ def _decode_bits(encoded_labels: torch.Tensor, bit_width: int) -> torch.Tensor:
     e.g [2,1,0,3], bit_width = 2, then the output is [[0,1], [1,0], [0,0], [1,1]]
     Most-significant bit is the last task, least-significant bit is the first task
     """
-    bit_positions = torch.arange(bit_width, device=encoded_labels.device)
-
-    encoded_labels = encoded_labels.unsqueeze(-1)
-    return (encoded_labels >> bit_positions) & 1
+    encoded_labels = encoded_labels.reshape(-1, 1)
+    n = encoded_labels.size(0)
+    # NPU aclnnRightShift does not broadcast [N, 1] >> [bit_width] into [N, bit_width].
+    bit_positions = torch.arange(
+        bit_width, device=encoded_labels.device, dtype=encoded_labels.dtype
+    ).reshape(1, -1)
+    return (
+        encoded_labels.expand(n, bit_width) >> bit_positions.expand(n, bit_width)
+    ) & 1
 
 
 class MultiTaskLossModule(torch.nn.Module):
@@ -61,7 +66,7 @@ class MultiTaskLossModule(torch.nn.Module):
             ), "num_tasks should be 1 for multi-class classification"
             self._loss_modules = torch.nn.CrossEntropyLoss(reduction=reduction)
 
-    @output_nvtx_hook(nvtx_tag="loss computation")
+    # @output_nvtx_hook(nvtx_tag="loss computation")
     def forward(self, merged_logits, labels) -> torch.Tensor:
         """
         Forward pass of the MultiTaskLossModule.

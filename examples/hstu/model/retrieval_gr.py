@@ -15,6 +15,7 @@
 from typing import Any, Tuple
 
 import torch
+import torch_npu
 from commons.datasets.hstu_batch import HSTUBatch
 from commons.modules.embedding import ShardedEmbedding
 from commons.ops.length_to_offsets import length_to_complete_offsets
@@ -31,6 +32,10 @@ from modules.output_postprocessors import L2NormEmbeddingPostprocessor
 from modules.sampled_softmax_loss import SampledSoftmaxLoss
 from modules.similarity.dot_product import DotProductSimilarity
 
+from ops.pt_ops.pt_jagged_tensors import (
+    pytorch_concat_2D_jagged,
+    pytorch_split_2D_jagged
+)
 
 class RetrievalGR(BaseModel):
     """
@@ -53,7 +58,7 @@ class RetrievalGR(BaseModel):
         assert (
             self._tp_size == 1
         ), "RetrievalGR does not support tensor model parallel, because of the sampled softmax loss and evaluation"
-        self._device = torch.device("cuda", torch.cuda.current_device())
+        self._device = torch.device("npu", torch_npu.npu.current_device())
         self._hstu_config = hstu_config
         self._task_config = task_config
 
@@ -133,24 +138,30 @@ class RetrievalGR(BaseModel):
         shift_pred_item_seqlen_offsets = length_to_complete_offsets(
             torch.clamp(pred_item_seqlen - 1, min=0)
         )
-        first_n_pred_item_embeddings, _ = triton_split_2D_jagged(
-            pred_item_embeddings,
+        first_n_pred_item_embeddings, _ = pytorch_split_2D_jagged(
             pred_item_max_seqlen,
-            offsets_a=shift_pred_item_seqlen_offsets,
-            offsets_b=pred_item_seqlen_offsets - shift_pred_item_seqlen_offsets,
+            pred_item_embeddings,
+            max_len_left = None,
+            max_len_right = None,
+            offsets_left=shift_pred_item_seqlen_offsets,
+            offsets_right=pred_item_seqlen_offsets - shift_pred_item_seqlen_offsets,
         )
 
-        _, last_n_supervision_item_embeddings = triton_split_2D_jagged(
+        _, last_n_supervision_item_embeddings = pytorch_split_2D_jagged(
+            pred_item_max_seqlen,
             supervision_item_embeddings,
-            pred_item_max_seqlen,
-            offsets_a=pred_item_seqlen_offsets - shift_pred_item_seqlen_offsets,
-            offsets_b=shift_pred_item_seqlen_offsets,
+            max_len_left = None,
+            max_len_right = None,
+            offsets_left=pred_item_seqlen_offsets - shift_pred_item_seqlen_offsets,
+            offsets_right=shift_pred_item_seqlen_offsets,
         )
-        _, last_n_supervision_item_ids = triton_split_2D_jagged(
-            supervision_item_ids.view(-1, 1),
+        _, last_n_supervision_item_ids = pytorch_split_2D_jagged(
             pred_item_max_seqlen,
-            offsets_a=pred_item_seqlen_offsets - shift_pred_item_seqlen_offsets,
-            offsets_b=shift_pred_item_seqlen_offsets,
+            supervision_item_ids.view(-1, 1),
+            max_len_left = None,
+            max_len_right = None,
+            offsets_left=pred_item_seqlen_offsets - shift_pred_item_seqlen_offsets,
+            offsets_right=shift_pred_item_seqlen_offsets,
         )
         return (
             first_n_pred_item_embeddings.view(-1, self._embedding_dim),
@@ -159,7 +170,7 @@ class RetrievalGR(BaseModel):
             last_n_supervision_item_embeddings.view(-1, self._embedding_dim),
         )
 
-    @output_nvtx_hook(nvtx_tag="RetrievalModel", backward=False)
+    # @output_nvtx_hook(nvtx_tag="RetrievalModel", backward=False)
     def forward(  # type: ignore[override]
         self,
         batch: HSTUBatch,

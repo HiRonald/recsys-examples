@@ -14,9 +14,10 @@
 # limitations under the License.
 
 # pyre-strict
-from typing import Any, Dict, Tuple, Type, Union
+from typing import Any, Dict, List, Set, Tuple, Type, Union, Optional
 
 import torch
+import torch_npu
 import torch.distributed as dist
 import torchrec
 
@@ -24,16 +25,6 @@ import torchrec
 from commons.distributed.finalize_model_grads import finalize_model_grads
 from commons.modules.embedding import DataParallelEmbeddingCollection
 from commons.optimizer import OptimizerParam
-from dynamicemb import DynamicEmbTableOptions
-from dynamicemb.get_planner import get_planner
-from dynamicemb.planner import (
-    DynamicEmbeddingShardingPlanner as DynamicEmbeddingShardingPlanner,
-)
-from dynamicemb.shard import (
-    DynamicEmbeddingBagCollectionSharder,
-    DynamicEmbeddingCollectionSharder,
-)
-from dynamicemb.utils import TORCHREC_TYPES
 from fbgemm_gpu.split_embedding_configs import EmbOptimType, SparseType
 from megatron.core import tensor_parallel
 from megatron.core.distributed import DistributedDataParallel as DDP
@@ -59,10 +50,108 @@ from torchrec.distributed.fbgemm_qcomm_codec import (
 from torchrec.distributed.model_parallel import DistributedModelParallel
 from torchrec.distributed.types import ShardedTensor, ShardingEnv
 from torchrec.optim.optimizers import in_backward_optimizer_filter
+from torchrec.modules.embedding_modules import (
+    EmbeddingBagCollection,
+    EmbeddingCollection,
+)
+from torchrec.distributed.comm import get_local_size
+from torchrec.distributed.embedding_types import ShardingType
+from torchrec.distributed.planner import Topology
+from torchrec.distributed.types import ShardingType
+from torchrec.modules.embedding_configs import EmbeddingConfig
+from dynamic_emb import (
+    DynamicEmbeddingEnumerator,
+    DynamicEmbParameterConstraints,
+    DynamicEmbTableOptions,
+    DynamicEmbeddingShardingPlanner,
+    DynamicEmbeddingCollectionSharder,
+)
 
 DATA_PARALLEL_EMBEDDING_MODULE_NAME = "_data_parallel_embedding_collection"
 from megatron.core import parallel_state
 
+TORCHREC_TYPES: Set[Type[Union[EmbeddingBagCollection, EmbeddingCollection]]] = {
+    EmbeddingBagCollection,
+    EmbeddingCollection,
+}
+
+_pipeline_type_to_model_parallel_allowed_compute_kernels = {
+    "prefetch": ["fused_uvm_caching"],
+    "native": ["fused", "fused_uvm"],
+    "none": [],  # none does not constrain the compute kernels
+}
+_pipeline_type_to_data_parallel_allowed_compute_kernels = {
+    "prefetch": ["dense"],
+    "native": ["dense"],
+    "none": [],
+}
+_sharding_type_to_allowed_compute_kernels = {
+    "data_parallel": _pipeline_type_to_data_parallel_allowed_compute_kernels,
+    "model_parallel": _pipeline_type_to_model_parallel_allowed_compute_kernels,
+}
+
+
+def get_planner(
+    eb_configs: List[EmbeddingConfig],
+    data_parallel_embedding_table_names: Set[str],
+    dynamicemb_options_dict: Dict[str, DynamicEmbTableOptions],
+    device: torch.device,
+    pipeline_type: str = "none",
+    ddr_cap: int = 512 * 1024 * 1024 * 1024,  # Assume a Node have 512GB memory
+    intra_host_bw: int = 450e9,  # Nvlink bandwidth
+    inter_host_bw: int = 25e9,  # NIC bandwidth
+):
+    constraints = {}
+    for config in eb_configs:
+        if config.name in data_parallel_embedding_table_names:
+            compute_kernel_type = _sharding_type_to_allowed_compute_kernels[
+                "data_parallel"
+            ][pipeline_type]
+            constraint = DynamicEmbParameterConstraints(
+                sharding_types=[
+                    ShardingType.DATA_PARALLEL.value,
+                ],
+                use_dynamicemb=False,
+                compute_kernels=compute_kernel_type,
+            )
+        elif config.name in dynamicemb_options_dict:
+            # TODO add dynamic embedding compute kernels
+            compute_kernel_type = ["fused"]
+            dynamicemb_options = dynamicemb_options_dict[config.name]
+            constraint = DynamicEmbParameterConstraints(
+                sharding_types=[ShardingType.ROW_WISE.value],
+                dynamicemb_options=dynamicemb_options,
+                compute_kernels=compute_kernel_type,
+            )
+        else:
+            compute_kernel_type = _sharding_type_to_allowed_compute_kernels[
+                "model_parallel"
+            ][pipeline_type]
+            # TODO: save and load does not support table-wise sharding, disable them for now
+            constraint = DynamicEmbParameterConstraints(
+                sharding_types=[
+                    ShardingType.ROW_WISE.value,
+                ],
+                use_dynamicemb=False,
+                compute_kernels=compute_kernel_type,
+            )
+        constraints.update({config.name: constraint})
+
+    topology = Topology(
+        world_size=dist.get_world_size(),
+        local_world_size=get_local_size(),
+        compute_device=device.type,
+    )
+    enumerator = DynamicEmbeddingEnumerator(
+        topology=topology,
+        constraints=constraints,
+    )
+    return DynamicEmbeddingShardingPlanner(
+        eb_configs=eb_configs,
+        topology=topology,
+        constraints=constraints,
+        enumerator=enumerator,
+    )
 
 def apply_megatron_ddp(
     model: Union[DistributedModelParallel, torch.nn.Module],
@@ -260,10 +349,7 @@ def apply_dmp(
         )
     )
     sharders = [
-        DynamicEmbeddingBagCollectionSharder(
-            qcomm_codecs_registry=qcomm_codecs_registry,
-            fused_params=fused_params,
-        ),
+        # NPU 目前仅支持 DynamicEmbeddingCollectionSharder接口
         DynamicEmbeddingCollectionSharder(
             qcomm_codecs_registry=qcomm_codecs_registry,
             use_index_dedup=True,
@@ -280,11 +366,10 @@ def apply_dmp(
     with tensor_parallel.get_cuda_rng_tracker().fork("sharded-embedding-group-seed"):
         model = DistributedModelParallel(
             module=model,
-            env=ShardingEnv.from_process_group(pg),
             device=device,
             sharders=sharders,
             plan=plan,
-            init_data_parallel=False,
+            init_data_parallel=True, # 开启数据并行
         )
 
     # Create keyed optimizer
@@ -334,7 +419,7 @@ def make_optimizer_and_shard(
     pg: torch.distributed.ProcessGroup = None,
 ) -> Tuple[DistributedModelParallel, torch.optim.Optimizer]:
     if device is None:
-        device = torch.device("cuda", torch.cuda.current_device())
+        device = torch.device("npu", torch_npu.npu.current_device())
     if pg is None:
         pg = dist.group.WORLD
 

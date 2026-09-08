@@ -2,16 +2,22 @@ TrainerArgs.train_batch_size = 32
 TrainerArgs.eval_batch_size = 32
 TrainerArgs.log_interval = 50
 TrainerArgs.eval_interval = 50
+TrainerArgs.pipeline_type = "none"
+TrainerArgs.enable_balanced_shuffler = False
 
 DatasetArgs.dataset_name = 'kuairand-27k'
 DatasetArgs.max_history_seqlen = 8000
 DatasetArgs.max_num_candidates = 256
 DatasetArgs.shuffle = True
 
+NetworkArgs.dtype_str = "bfloat16"
 NetworkArgs.num_layers = 1
 NetworkArgs.num_attention_heads = 4
 NetworkArgs.hidden_size = 128
 NetworkArgs.kv_channels = 128
+NetworkArgs.kernel_backend = 'npu_fused'
+NetworkArgs.layer_type = 'native'
+NetworkArgs.hash_size = 10000000
 
 RankingArgs.prediction_head_arch = [
     512, 8

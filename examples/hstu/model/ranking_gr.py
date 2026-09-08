@@ -15,6 +15,7 @@
 from typing import Any, Dict, Tuple
 
 import torch
+import torch_npu
 from commons.datasets.hstu_batch import HSTUBatch
 from commons.distributed.dmp_to_tp import (
     dmp_batch_to_tp,
@@ -49,7 +50,7 @@ class RankingGR(BaseModel):
     ):
         super().__init__()
         self._tp_size = parallel_state.get_tensor_model_parallel_world_size()
-        self._device = torch.device("cuda", torch.cuda.current_device())
+        self._device = torch.device("npu", torch_npu.npu.current_device())
         self._hstu_config = hstu_config
         self._task_config = task_config
 
